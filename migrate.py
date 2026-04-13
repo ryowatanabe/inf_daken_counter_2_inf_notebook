@@ -338,7 +338,7 @@ def generate_achievement(target: dict) -> dict:
                 except ValueError:
                     ach[field] = val
 
-    achievement['fromhistoriesgenerate_lastversion'] = 'migration'
+    achievement['fromhistoriesgenerate_lastversion'] = '0.0.0'
     return achievement
 
 

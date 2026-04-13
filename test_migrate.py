@@ -387,6 +387,24 @@ class TestGenerateAchievement(unittest.TestCase):
             }
         return target
 
+    def test_version_string_is_numeric(self):
+        """fromhistoriesgenerate_lastversion が数字を含む文字列であること。
+        inf_notebook の versioncheck.py が re.search(r'\\d+', ...) で数字を抽出するため、
+        数字を含まない文字列（例: 'migration'）は AttributeError を引き起こす。
+        """
+        target = self._make_target([
+            ('20230101-120000',
+             {'arrange': None, 'flip': None, 'assist': None, 'battle': False, 'allscratch': None, 'regularspeed': None},
+             'CLEAR', 'A', 500),
+        ])
+        ach = generate_achievement(target)
+        import re
+        version = ach.get('fromhistoriesgenerate_lastversion', '')
+        self.assertIsNotNone(
+            re.search(r'\d+', version),
+            f"fromhistoriesgenerate_lastversion={version!r} must contain digits"
+        )
+
     def test_fixed_clear_type(self):
         target = self._make_target([
             ('20230101-120000',
