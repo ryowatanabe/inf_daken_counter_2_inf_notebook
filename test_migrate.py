@@ -26,6 +26,7 @@ from migrate import (
     parse_play_mode,
     save_music_json,
     load_music_json,
+    should_exclude,
 )
 
 
@@ -468,6 +469,33 @@ class TestGenerateAchievement(unittest.TestCase):
         self.assertEqual(ach['fixed']['dj_level'], 'AA')
 
 
+class TestShouldExclude(unittest.TestCase):
+    def _entry(self, score=1000, miss_count=10):
+        return {
+            'score': score,
+            'miss_count': miss_count,
+        }
+
+    def test_normal_entry_not_excluded(self):
+        self.assertIsNone(should_exclude(self._entry()))
+
+    def test_score_zero_excluded(self):
+        self.assertIsNotNone(should_exclude(self._entry(score=0)))
+
+    def test_score_9_excluded(self):
+        self.assertIsNotNone(should_exclude(self._entry(score=9)))
+
+    def test_score_10_not_excluded(self):
+        self.assertIsNone(should_exclude(self._entry(score=10)))
+
+    def test_miss_count_none_excluded(self):
+        self.assertIsNotNone(should_exclude(self._entry(miss_count=None)))
+
+    def test_miss_count_zero_not_excluded(self):
+        # miss_count=0 はフルコンボ、除外しない
+        self.assertIsNone(should_exclude(self._entry(miss_count=0)))
+
+
 class TestNormalizeEntry(unittest.TestCase):
     def _entry_14(self):
         return ['10', 'SONG A', 'DPH', 900, 'AA', 'A', 'CLEAR', 'H-CLEAR',
@@ -534,7 +562,7 @@ class TestIntegration(unittest.TestCase):
         if not os.path.exists(self.ALLLOG_PATH):
             self.skipTest("alllog.pkl not found")
 
-        entries, errors = load_alllog(self.ALLLOG_PATH)
+        entries, errors, excluded = load_alllog(self.ALLLOG_PATH)
         self.assertGreater(len(entries), 0)
         self.assertEqual(errors, 0)
 
@@ -559,7 +587,7 @@ class TestIntegration(unittest.TestCase):
         if not os.path.exists(self.ALLLOG_PATH):
             self.skipTest("alllog.pkl not found")
 
-        entries, _ = load_alllog(self.ALLLOG_PATH)
+        entries, _, _excluded = load_alllog(self.ALLLOG_PATH)
         music_entries = {}
         for entry in entries:
             music_entries.setdefault(entry['music'], []).append(entry)
@@ -612,7 +640,7 @@ class TestIntegration(unittest.TestCase):
                         original_timestamps.setdefault(fname, set()).add(ts)
 
         # マージ実行
-        entries, _ = load_alllog(self.ALLLOG_PATH)
+        entries, _, _excluded = load_alllog(self.ALLLOG_PATH)
         music_entries = {}
         for entry in entries:
             music_entries.setdefault(entry['music'], []).append(entry)

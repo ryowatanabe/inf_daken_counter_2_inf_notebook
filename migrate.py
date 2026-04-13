@@ -596,23 +596,49 @@ def generate_summary(records_dir: str) -> dict:
 
 # ---------- alllog.pkl 読み込み ----------
 
+def should_exclude(entry: dict) -> str | None:
+    """移行対象から除外すべきエントリの理由を返す。対象外なら None。
+
+    除外条件:
+    - score が 10 未満: 画像認識の不具合によるスコア1桁誤認識
+    - miss_count が None: 途中終了プレイ（inf_notebook では記録対象外）
+    """
+    if entry['score'] is not None and entry['score'] < 10:
+        return f"score too low ({entry['score']})"
+    if entry['miss_count'] is None:
+        return "miss_count is None (interrupted play)"
+    return None
+
+
 def load_alllog(pkl_path: str) -> list[dict]:
-    """alllog.pkl を読み込み、正規化した dict リストを返す（タイムスタンプ昇順）。"""
+    """alllog.pkl を読み込み、正規化・フィルタ済みの dict リストを返す（タイムスタンプ昇順）。
+
+    Returns:
+        (entries, parse_errors, excluded_count)
+    """
     with open(pkl_path, 'rb') as f:
         raw_list = pickle.load(f)
 
     entries = []
     errors = 0
+    excluded = 0
     for i, raw in enumerate(raw_list):
         try:
             entry = normalize_entry(raw)
-            entries.append(entry)
         except Exception as e:
             print(f"  [WARN] Entry {i} skipped: {e}", file=sys.stderr)
             errors += 1
+            continue
+
+        reason = should_exclude(entry)
+        if reason:
+            excluded += 1
+            continue
+
+        entries.append(entry)
 
     entries.sort(key=lambda e: e['timestamp'])
-    return entries, errors
+    return entries, errors, excluded
 
 
 # ---------- メイン処理 ----------
@@ -625,8 +651,8 @@ def main(alllog_path: str, output_dir: str) -> None:
 
     # 1. alllog.pkl 読み込み
     print("Loading alllog.pkl ...")
-    entries, load_errors = load_alllog(alllog_path)
-    print(f"  Loaded {len(entries)} entries ({load_errors} errors)")
+    entries, load_errors, excluded = load_alllog(alllog_path)
+    print(f"  Loaded {len(entries)} entries ({load_errors} errors, {excluded} excluded)")
 
     # 2. 曲別にグループ化
     music_entries: dict[str, list[dict]] = {}
@@ -666,6 +692,7 @@ def main(alllog_path: str, output_dir: str) -> None:
     print(f"  Songs processed : {total_songs}")
     print(f"  Entries added   : {total_added}")
     print(f"  Entries skipped : {total_skipped} (duplicates)")
+    print(f"  Entries excluded: {excluded} (score<10 or miss_count=None)")
     print(f"  Load errors     : {load_errors}")
     print(f"  summary.json    : {len(summary['musics'])} songs")
     print("Done.")
