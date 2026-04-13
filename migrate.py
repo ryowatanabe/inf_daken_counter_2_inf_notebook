@@ -363,7 +363,7 @@ def save_music_json(records_dir: str, music_name: str, data: dict) -> None:
     path = os.path.join(records_dir, music_filename(music_name))
     tmp_path = path + '.tmp'
     with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, separators=(',', ':'))
     os.replace(tmp_path, path)
 
 
@@ -688,7 +688,7 @@ def main(alllog_path: str, output_dir: str) -> None:
     summary_path = os.path.join(output_dir, 'summary.json')
     tmp_summary = summary_path + '.tmp'
     with open(tmp_summary, 'w', encoding='utf-8') as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+        json.dump(summary, f, ensure_ascii=False, separators=(',', ':'))
     os.replace(tmp_summary, summary_path)
 
     print()
