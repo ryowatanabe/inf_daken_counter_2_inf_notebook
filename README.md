@@ -24,13 +24,16 @@ inf_daken_counter の保存データ（`alllog.pkl`）を inf_notebook の JSON 
 ## 使い方
 
 ```bash
-python migrate.py <alllog.pkl のパス> <出力先 records ディレクトリ> [オプション]
+python migrate.py <alllog.pkl のパス> <出力先 records ディレクトリ> (--musicnames <パス> | --no-musicnames)
 ```
+
+`--musicnames` と `--no-musicnames` のどちらかは必須です。
 
 ### 新規移行（既存データなし）
 
 ```bash
-python migrate.py path/to/alllog.pkl path/to/inf_notebook/records
+# リポジトリ同梱のマッピングファイルを使用する場合
+python migrate.py path/to/alllog.pkl path/to/inf_notebook/records --musicnames resources/musicnamechanges.res
 ```
 
 ### 既存データへのマージ
@@ -38,12 +41,12 @@ python migrate.py path/to/alllog.pkl path/to/inf_notebook/records
 出力先に既存の `records/` ディレクトリを指定するだけです。重複エントリは自動的にスキップされます。
 
 ```bash
-python migrate.py path/to/alllog.pkl path/to/inf_notebook/records
+python migrate.py path/to/alllog.pkl path/to/inf_notebook/records --musicnames resources/musicnamechanges.res
 ```
 
 ### 楽曲名修正マッピング
 
-デフォルトでは `resources/musicnamechanges.res` に定義された楽曲名修正マッピングを適用します。alllog に記録された旧い表記（例: `共犯へヴンズコード`）が inf_notebook の正式表記（例: `共犯ヘヴンズコード`）に自動的に変換されます。
+`--musicnames` に `resources/musicnamechanges.res` を指定すると、alllog に記録された旧い表記（例: `共犯へヴンズコード`）が inf_notebook の正式表記（例: `共犯ヘヴンズコード`）に自動的に変換されます。
 
 ```bash
 # 楽曲名修正なし

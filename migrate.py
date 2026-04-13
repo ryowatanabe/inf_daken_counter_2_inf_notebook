@@ -765,12 +765,12 @@ if __name__ == '__main__':
     parser.add_argument('alllog_pkl', help='alllog.pkl のパス')
     parser.add_argument('output_records_dir', help='出力先 records ディレクトリ')
 
-    musicnames_group = parser.add_mutually_exclusive_group()
+    musicnames_group = parser.add_mutually_exclusive_group(required=True)
     musicnames_group.add_argument(
         '--musicnames',
         metavar='PATH',
         default=None,
-        help=f'musicnamechanges.res のパス（デフォルト: {DEFAULT_MUSICNAMES_PATH}）',
+        help='musicnamechanges.res のパス（リポジトリ同梱: resources/musicnamechanges.res）',
     )
     musicnames_group.add_argument(
         '--no-musicnames',
