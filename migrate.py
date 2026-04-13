@@ -1,15 +1,18 @@
 """
-inf_daken_counter の alllog.pkl を inf_notebook の JSON 形式に移行するスクリプト
+inf_daken_counter の alllog.pkl / playlog.infdc を inf_notebook の JSON 形式に移行するスクリプト
 
 Usage:
-    python migrate.py <alllog.pkl> <output_records_dir> [--no-musicnames]
-    python migrate.py <alllog.pkl> <output_records_dir> --musicnames <path>
+    python migrate.py <alllog.pkl|playlog.infdc> <output_records_dir> (--musicnames <path> | --no-musicnames)
 
 既存データがある場合はマージ（重複タイムスタンプは無視）します。
 recent.json は alllog に UI 情報がないため生成しません。
 """
 
+import bz2
+import datetime
+import io
 import json
+import math
 import os
 import pickle
 import sys
@@ -243,7 +246,7 @@ def build_history_entry(entry: dict, new_flags: dict) -> dict:
         'score': {'value': entry['score'], 'new': new_flags['score']},
         'miss_count': {'value': entry['miss_count'], 'new': new_flags['miss_count']},
         'options': entry['options'],
-        'playspeed': None,
+        'playspeed': entry.get('playspeed'),
     }
 
 
@@ -622,6 +625,308 @@ def load_musicname_changes(path: str) -> dict[str, str]:
         return {}
 
 
+# ---------- v3 スタブクラス（playlog.infdc のアンピクル用） ----------
+
+def _make_enum_stub(members: dict):
+    """name→value のマッピングから pickle 復元用の Enum スタブクラスを生成する。
+
+    pickle は Enum を __new__(cls, value) で復元するため、value を受け取り
+    name を逆引きできるスタブで十分。
+    """
+    by_value = {v: k for k, v in members.items()}
+
+    class _EnumStub:
+        _by_value = by_value
+
+        def __new__(cls, value):
+            obj = object.__new__(cls)
+            obj.value = value
+            obj._name = cls._by_value.get(value, str(value))
+            return obj
+
+        @property
+        def name(self):
+            return self._name
+
+    return _EnumStub
+
+
+_ClearLampStub = _make_enum_stub({
+    'noplay': 0, 'failed': 1, 'assist': 2, 'easy': 3,
+    'clear': 4, 'hard': 5, 'exh': 6, 'fc': 7,
+})
+_PlayStyleStub = _make_enum_stub({'sp': 0, 'dp': 1})
+_DifficultyStub = _make_enum_stub({
+    'beginner': 0, 'normal': 1, 'hyper': 2, 'another': 3, 'leggendaria': 4,
+})
+_DetectModeStub = _make_enum_stub({
+    'init': 0, 'play': 1, 'select': 2, 'result': 3, 'option': 4,
+})
+
+
+class _JudgeStub:
+    """src.classes.Judge のスタブ。"""
+    def __init__(self, pg=0, gr=0, gd=0, bd=0, pr=0, cb=0):
+        self.pg = pg
+        self.gr = gr
+        self.gd = gd
+        self.bd = bd
+        self.pr = pr
+        self.cb = cb
+
+
+class _AverageReleaseStub:
+    """src.classes.average_release のスタブ。"""
+    def __init__(self, hist):
+        self.histogram = hist
+        self.total = sum(hist) / len(hist) if hist else 0.0
+
+
+class _PlayOptionStub:
+    """src.result.PlayOption のスタブ。"""
+    valid = False
+    arrange = None
+    flip = None
+    assist = None
+    battle = False
+    allscratch = False
+    regularspeed = False
+
+
+class _OneResultStub:
+    """src.result.OneResult のスタブ。pickle 復元で属性が設定される。"""
+
+
+class _V3Unpickler(pickle.Unpickler):
+    """v3 の playlog.infdc を依存なしで復元するカスタム Unpickler。"""
+
+    _STUBS = {
+        ('src.classes', 'clear_lamp'): _ClearLampStub,
+        ('src.classes', 'play_style'): _PlayStyleStub,
+        ('src.classes', 'difficulty'): _DifficultyStub,
+        ('src.classes', 'detect_mode'): _DetectModeStub,
+        ('src.classes', 'Judge'): _JudgeStub,
+        ('src.classes', 'average_release'): _AverageReleaseStub,
+        ('src.result', 'OneResult'): _OneResultStub,
+        ('src.result', 'PlayOption'): _PlayOptionStub,
+    }
+
+    def find_class(self, module, name):
+        stub = self._STUBS.get((module, name))
+        if stub is not None:
+            return stub
+        return super().find_class(module, name)
+
+
+# ---------- v3 変換定数 ----------
+
+_PLAY_STYLE_MAP = {0: 'SP', 1: 'DP'}
+_DIFFICULTY_V3_MAP = {
+    0: 'BEGINNER', 1: 'NORMAL', 2: 'HYPER', 3: 'ANOTHER', 4: 'LEGGENDARIA',
+}
+_CLEAR_LAMP_MAP = {
+    0: 'NO PLAY', 1: 'FAILED', 2: 'A-CLEAR', 3: 'E-CLEAR',
+    4: 'CLEAR', 5: 'H-CLEAR', 6: 'EXH-CLEAR', 7: 'F-COMBO',
+}
+
+
+# ---------- v3 変換関数 ----------
+
+def compute_dj_level(score: int | None, notes: int | None) -> str:
+    """IIDX の DJ LEVEL を score と notes から算出する。
+
+    IIDX の計算式: score >= ceil(N/9 * notes * 2) → DJ LEVEL
+    N=8: AAA, N=7: AA, N=6: A, N=5: B, N=4: C, N=3: D, N=2: E, それ以下: F
+    """
+    if score is None or notes is None or notes == 0:
+        return 'F'
+    max_score = notes * 2
+    thresholds = [
+        ('AAA', 8), ('AA', 7), ('A', 6), ('B', 5),
+        ('C', 4), ('D', 3), ('E', 2),
+    ]
+    for level, n in thresholds:
+        if score >= math.ceil(n / 9 * max_score):
+            return level
+    return 'F'
+
+
+def convert_unix_timestamp(ts: int) -> str:
+    """Unix タイムスタンプを inf_notebook 形式に変換する。
+
+    Unix int → "YYYYMMDD-HHMMSS"
+    """
+    dt = datetime.datetime.fromtimestamp(ts)
+    return dt.strftime('%Y%m%d-%H%M%S')
+
+
+def convert_v3_options(option: _PlayOptionStub) -> dict:
+    """PlayOption スタブを options dict に変換する。
+
+    arrange 値は v2 と混在しているため、スペース除去・正規化を行う。
+    """
+    arrange = option.arrange
+    if arrange is not None:
+        # "X / Y" → "X/Y"（スペース除去）、v2 形式・v3 形式のどちらにも適用
+        arrange = arrange.replace(' ', '')
+        # OFF / REGULAR / OFF/OFF → null
+        if arrange in ('OFF', 'REGULAR', 'OFF/OFF'):
+            arrange = None
+    return {
+        'arrange': arrange,
+        'flip': option.flip,
+        'assist': option.assist,
+        'battle': option.battle,
+        'allscratch': option.allscratch,
+        'regularspeed': option.regularspeed,
+    }
+
+
+def normalize_v3_entry(entry: _OneResultStub) -> dict:
+    """OneResult スタブを処理しやすい dict に変換する。
+
+    normalize_entry() と同じ dict 形式を返す。
+    """
+    options = convert_v3_options(entry.option)
+
+    playtype = _PLAY_STYLE_MAP[entry.play_style.value]
+    difficulty = _DIFFICULTY_V3_MAP[entry.difficulty.value]
+    if options['battle']:
+        playtype = 'DP BATTLE'
+
+    clear_type = _CLEAR_LAMP_MAP[entry.lamp.value]
+    # pre_lamp=None は未プレイと同じ扱い（compute_new_flags で None → 'NO PLAY'）
+    prev_clear_type = _CLEAR_LAMP_MAP[entry.pre_lamp.value] if entry.pre_lamp is not None else None
+
+    score = entry.score
+    prev_score = entry.pre_score if entry.pre_score is not None else 0
+
+    dj_level = compute_dj_level(score, entry.notes)
+    prev_dj_level = compute_dj_level(prev_score, entry.notes)
+
+    miss_count = entry.bp
+    # pre_bp=99999999 はセンチネル値（前回記録なし）→ None として扱う
+    pre_bp = entry.pre_bp
+    prev_miss_count = None if (pre_bp is None or pre_bp == 99999999) else pre_bp
+
+    timestamp = convert_unix_timestamp(entry.timestamp)
+
+    return {
+        'timestamp': timestamp,
+        'music': entry.title,
+        'playtype': playtype,
+        'difficulty': difficulty,
+        'notes': entry.notes,
+        'clear_type': clear_type,
+        'prev_clear_type': prev_clear_type,
+        'dj_level': dj_level,
+        'prev_dj_level': prev_dj_level,
+        'score': score,
+        'prev_score': prev_score,
+        'miss_count': miss_count,
+        'prev_miss_count': prev_miss_count,
+        'options': options,
+        'playspeed': entry.playspeed,
+    }
+
+
+def should_exclude_v3(entry: _OneResultStub) -> str | None:
+    """v3 エントリが移行対象から除外すべきかどうかを判定する。
+
+    除外条件（実データ 18,280 件の分析に基づく）:
+    - timestamp == 0: v2 インポート時の日時パース失敗
+    - play_style is None: 全て timestamp=0 に含まれる
+    - difficulty is None: timestamp=0 または notes=None に含まれる
+    - dead is True: 途中落ち（dead=None の v2 インポートは許容）
+    - notes is None: ノーツ数不明（detect_mode=play の件も全てここに含まれる）
+    - score is None or score < 10: スコアなし / 誤認識
+    - bp is None or bp == 99999999: 途中終了プレイ（v2 の miss_count=None 相当）
+    """
+    if entry.timestamp == 0:
+        return "timestamp is 0"
+    if entry.play_style is None:
+        return "play_style is None"
+    if entry.difficulty is None:
+        return "difficulty is None"
+    if entry.dead is True:
+        return "dead (途中落ち)"
+    if entry.notes is None:
+        return "notes is None"
+    if entry.score is None:
+        return "score is None"
+    if entry.score < 10:
+        return f"score too low ({entry.score})"
+    if entry.bp is None:
+        return "bp is None"
+    if entry.bp == 99999999:
+        return "bp is sentinel (途中終了)"
+    return None
+
+
+# ---------- playlog.infdc 読み込み ----------
+
+def load_v3(infdc_path: str, musicname_changes: dict[str, str] | None = None) -> tuple:
+    """playlog.infdc を読み込み、正規化・フィルタ済みの dict リストを返す（タイムスタンプ昇順）。
+
+    Args:
+        infdc_path: playlog.infdc のパス
+        musicname_changes: 旧楽曲名→新楽曲名のマッピング dict（None の場合は適用しない）
+
+    Returns:
+        (entries, parse_errors, excluded_count, renamed_count)
+    """
+    with open(infdc_path, 'rb') as f:
+        raw_bytes = bz2.decompress(f.read())
+    raw_list = _V3Unpickler(io.BytesIO(raw_bytes)).load()
+
+    entries = []
+    errors = 0
+    excluded = 0
+    renamed = 0
+    for i, raw in enumerate(raw_list):
+        reason = should_exclude_v3(raw)
+        if reason:
+            excluded += 1
+            continue
+
+        try:
+            entry = normalize_v3_entry(raw)
+        except Exception as e:
+            print(f"  [WARN] v3 Entry {i} skipped: {e}", file=sys.stderr)
+            errors += 1
+            continue
+
+        # 楽曲名修正マッピングを適用
+        if musicname_changes:
+            old_name = entry['music']
+            new_name = musicname_changes.get(old_name)
+            if new_name is not None:
+                entry['music'] = new_name
+                renamed += 1
+
+        entries.append(entry)
+
+    entries.sort(key=lambda e: e['timestamp'])
+    return entries, errors, excluded, renamed
+
+
+# ---------- 入力ファイル判定 ----------
+
+def load_input(path: str, musicname_changes: dict[str, str] | None = None) -> tuple:
+    """入力ファイルの形式を自動判定して読み込む。
+
+    - .infdc: v3 形式（bz2 + pickle of OneResult）
+    - その他: v2 形式（pickle of flat list）
+
+    Returns:
+        (entries, parse_errors, excluded_count, renamed_count)
+    """
+    if path.endswith('.infdc'):
+        return load_v3(path, musicname_changes)
+    else:
+        return load_alllog(path, musicname_changes)
+
+
 # ---------- alllog.pkl 読み込み ----------
 
 def should_exclude(entry: dict) -> str | None:
@@ -684,14 +989,14 @@ def load_alllog(pkl_path: str, musicname_changes: dict[str, str] | None = None) 
 
 # ---------- メイン処理 ----------
 
-def main(alllog_path: str, output_dir: str, musicnames_path: str | None = DEFAULT_MUSICNAMES_PATH) -> None:
+def main(input_path: str, output_dir: str, musicnames_path: str | None = DEFAULT_MUSICNAMES_PATH) -> None:
     """
     Args:
-        alllog_path: alllog.pkl のパス
+        input_path: alllog.pkl または playlog.infdc のパス
         output_dir: 出力先 records ディレクトリ
         musicnames_path: musicnamechanges.res のパス。None の場合は楽曲名修正を行わない。
     """
-    print(f"Input:  {alllog_path}")
+    print(f"Input:  {input_path}")
     print(f"Output: {output_dir}")
 
     os.makedirs(output_dir, exist_ok=True)
@@ -703,9 +1008,10 @@ def main(alllog_path: str, output_dir: str, musicnames_path: str | None = DEFAUL
         if musicname_changes:
             print(f"Music name changes: {len(musicname_changes)} entries loaded from {musicnames_path}")
 
-    # 1. alllog.pkl 読み込み
-    print("Loading alllog.pkl ...")
-    entries, load_errors, excluded, renamed = load_alllog(alllog_path, musicname_changes)
+    # 1. 入力ファイル読み込み（v2/v3 自動判定）
+    fmt = 'v3 (playlog.infdc)' if input_path.endswith('.infdc') else 'v2 (alllog.pkl)'
+    print(f"Loading {fmt} ...")
+    entries, load_errors, excluded, renamed = load_input(input_path, musicname_changes)
     print(f"  Loaded {len(entries)} entries ({load_errors} errors, {excluded} excluded)")
     if renamed > 0:
         print(f"  Music names renamed: {renamed}")
@@ -748,7 +1054,7 @@ def main(alllog_path: str, output_dir: str, musicnames_path: str | None = DEFAUL
     print(f"  Songs processed : {total_songs}")
     print(f"  Entries added   : {total_added}")
     print(f"  Entries skipped : {total_skipped} (duplicates)")
-    print(f"  Entries excluded: {excluded} (score<10 or miss_count=None)")
+    print(f"  Entries excluded: {excluded}")
     if renamed > 0:
         print(f"  Names renamed   : {renamed}")
     print(f"  Load errors     : {load_errors}")
@@ -760,9 +1066,9 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='inf_daken_counter の alllog.pkl を inf_notebook の JSON 形式に移行する'
+        description='inf_daken_counter の alllog.pkl / playlog.infdc を inf_notebook の JSON 形式に移行する'
     )
-    parser.add_argument('alllog_pkl', help='alllog.pkl のパス')
+    parser.add_argument('input_file', help='alllog.pkl または playlog.infdc のパス')
     parser.add_argument('output_records_dir', help='出力先 records ディレクトリ')
 
     musicnames_group = parser.add_mutually_exclusive_group(required=True)
@@ -787,4 +1093,4 @@ if __name__ == '__main__':
     else:
         musicnames_path = DEFAULT_MUSICNAMES_PATH
 
-    main(args.alllog_pkl, args.output_records_dir, musicnames_path)
+    main(args.input_file, args.output_records_dir, musicnames_path)

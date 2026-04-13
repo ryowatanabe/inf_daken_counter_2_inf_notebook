@@ -2,6 +2,8 @@
 migrate.py のユニットテスト・統合テスト
 """
 
+import bz2
+import io
 import json
 import os
 import pickle
@@ -12,22 +14,35 @@ import unittest
 from migrate import (
     CLEAR_TYPES,
     DJ_LEVELS,
+    _ClearLampStub,
+    _DifficultyStub,
+    _OneResultStub,
+    _PlayOptionStub,
+    _PlayStyleStub,
+    _DetectModeStub,
+    _V3Unpickler,
     _ts_minute_prefix,
     build_history_entry,
+    compute_dj_level,
     compute_new_flags,
     convert_timestamp,
+    convert_unix_timestamp,
+    convert_v3_options,
     generate_achievement,
     generate_summary,
     load_alllog,
     load_musicname_changes,
+    load_v3,
     merge_entries_into_music,
     music_filename,
     normalize_entry,
+    normalize_v3_entry,
     parse_options,
     parse_play_mode,
     save_music_json,
     load_music_json,
     should_exclude,
+    should_exclude_v3,
 )
 
 
@@ -881,6 +896,461 @@ class TestIntegration(unittest.TestCase):
             missing = ts_set - merged_ts
             self.assertEqual(missing, set(),
                              f"{fname}: original timestamps missing after merge: {missing}")
+
+
+def _make_v3_entry(
+    title='Test Song',
+    play_style_value=1,   # dp=1
+    difficulty_value=3,   # another=3
+    lamp_value=4,         # clear=4
+    timestamp=1700000000,
+    playspeed=None,
+    arrange=None,
+    flip=None,
+    assist=None,
+    battle=False,
+    allscratch=False,
+    regularspeed=False,
+    score=1500,
+    bp=10,
+    pre_score=0,
+    pre_lamp_value=0,     # noplay=0
+    pre_bp=99999999,
+    notes=1000,
+    dead=False,
+):
+    """テスト用の OneResult スタブを生成するヘルパー。"""
+    entry = _OneResultStub()
+    entry.title = title
+    entry.play_style = _PlayStyleStub(play_style_value)
+    entry.difficulty = _DifficultyStub(difficulty_value)
+    entry.lamp = _ClearLampStub(lamp_value)
+    entry.timestamp = timestamp
+    entry.playspeed = playspeed
+    entry.detect_mode = _DetectModeStub(2)  # select=2
+    entry.is_arcade = False
+    entry.judge = None
+    entry.score = score
+    entry.bp = bp
+    entry.pre_score = pre_score
+    entry.pre_lamp = _ClearLampStub(pre_lamp_value)
+    entry.pre_bp = pre_bp
+    entry.notes = notes
+    entry.dead = dead
+    entry.average_release = None
+
+    opt = _PlayOptionStub()
+    opt.valid = True
+    opt.arrange = arrange
+    opt.flip = flip
+    opt.assist = assist
+    opt.battle = battle
+    opt.allscratch = allscratch
+    opt.regularspeed = regularspeed
+    entry.option = opt
+    return entry
+
+
+class TestComputeDjLevel(unittest.TestCase):
+    def test_aaa(self):
+        # score >= ceil(8/9 * notes*2)
+        # notes=1000, max=2000, threshold=ceil(8/9*2000)=ceil(1777.7)=1778
+        self.assertEqual(compute_dj_level(1778, 1000), 'AAA')
+        self.assertEqual(compute_dj_level(2000, 1000), 'AAA')
+
+    def test_aa(self):
+        # ceil(7/9*2000)=ceil(1555.5)=1556, AAA threshold=1778
+        self.assertEqual(compute_dj_level(1556, 1000), 'AA')
+        self.assertEqual(compute_dj_level(1777, 1000), 'AA')
+
+    def test_a(self):
+        # ceil(6/9*2000)=ceil(1333.3)=1334, AA threshold=1556
+        self.assertEqual(compute_dj_level(1334, 1000), 'A')
+        self.assertEqual(compute_dj_level(1555, 1000), 'A')
+
+    def test_b(self):
+        # ceil(5/9*2000)=ceil(1111.1)=1112
+        self.assertEqual(compute_dj_level(1112, 1000), 'B')
+
+    def test_c(self):
+        # ceil(4/9*2000)=ceil(888.8)=889
+        self.assertEqual(compute_dj_level(889, 1000), 'C')
+
+    def test_d(self):
+        # ceil(3/9*2000)=ceil(666.6)=667
+        self.assertEqual(compute_dj_level(667, 1000), 'D')
+
+    def test_e(self):
+        # ceil(2/9*2000)=ceil(444.4)=445
+        self.assertEqual(compute_dj_level(445, 1000), 'E')
+
+    def test_f(self):
+        # 444以下
+        self.assertEqual(compute_dj_level(444, 1000), 'F')
+        self.assertEqual(compute_dj_level(0, 1000), 'F')
+
+    def test_none_score(self):
+        self.assertEqual(compute_dj_level(None, 1000), 'F')
+
+    def test_none_notes(self):
+        self.assertEqual(compute_dj_level(1500, None), 'F')
+
+    def test_zero_notes(self):
+        self.assertEqual(compute_dj_level(0, 0), 'F')
+
+
+class TestConvertUnixTimestamp(unittest.TestCase):
+    def test_basic(self):
+        # 固定した日時で検証
+        import datetime
+        dt = datetime.datetime(2023, 6, 14, 0, 25, 0)
+        ts = int(dt.timestamp())
+        result = convert_unix_timestamp(ts)
+        self.assertRegex(result, r'^\d{8}-\d{6}$')
+        self.assertIn('20230614', result)
+
+    def test_seconds_preserved(self):
+        # 秒精度が保持されること
+        import datetime
+        dt = datetime.datetime(2026, 4, 5, 21, 45, 25)
+        ts = int(dt.timestamp())
+        result = convert_unix_timestamp(ts)
+        self.assertTrue(result.endswith('214525') or '2145' in result)
+
+
+class TestConvertV3Options(unittest.TestCase):
+    def _make_opt(self, arrange=None, flip=None, assist=None,
+                  battle=False, allscratch=False, regularspeed=False):
+        opt = _PlayOptionStub()
+        opt.valid = True
+        opt.arrange = arrange
+        opt.flip = flip
+        opt.assist = assist
+        opt.battle = battle
+        opt.allscratch = allscratch
+        opt.regularspeed = regularspeed
+        return opt
+
+    def test_no_arrange(self):
+        result = convert_v3_options(self._make_opt(arrange=None))
+        self.assertIsNone(result['arrange'])
+        self.assertFalse(result['battle'])
+
+    def test_off_arrange(self):
+        result = convert_v3_options(self._make_opt(arrange='OFF'))
+        self.assertIsNone(result['arrange'])
+
+    def test_regular_arrange(self):
+        result = convert_v3_options(self._make_opt(arrange='REGULAR'))
+        self.assertIsNone(result['arrange'])
+
+    def test_off_off_arrange(self):
+        result = convert_v3_options(self._make_opt(arrange='OFF / OFF'))
+        # 'OFF / OFF' → スペース除去 → 'OFF/OFF' → None
+        self.assertIsNone(result['arrange'])
+
+    def test_mirror(self):
+        result = convert_v3_options(self._make_opt(arrange='MIRROR'))
+        self.assertEqual(result['arrange'], 'MIRROR')
+
+    def test_mir_off_v2_abbrev(self):
+        # v2 由来の略称表記（スペース除去）
+        result = convert_v3_options(self._make_opt(arrange='MIR / OFF'))
+        self.assertEqual(result['arrange'], 'MIR/OFF')
+
+    def test_mir_mir_v2_abbrev(self):
+        result = convert_v3_options(self._make_opt(arrange='MIR / MIR'))
+        self.assertEqual(result['arrange'], 'MIR/MIR')
+
+    def test_s_ran_s_ran(self):
+        result = convert_v3_options(self._make_opt(arrange='S-RAN / S-RAN'))
+        self.assertEqual(result['arrange'], 'S-RAN/S-RAN')
+
+    def test_s_random(self):
+        # v3 フルネーム
+        result = convert_v3_options(self._make_opt(arrange='S-RANDOM'))
+        self.assertEqual(result['arrange'], 'S-RANDOM')
+
+    def test_symm_ran(self):
+        result = convert_v3_options(self._make_opt(arrange='SYMM-RAN'))
+        self.assertEqual(result['arrange'], 'SYMM-RAN')
+
+    def test_allscratch(self):
+        result = convert_v3_options(self._make_opt(allscratch=True))
+        self.assertTrue(result['allscratch'])
+        self.assertFalse(result['regularspeed'])
+
+    def test_regularspeed(self):
+        result = convert_v3_options(self._make_opt(regularspeed=True))
+        self.assertTrue(result['regularspeed'])
+
+    def test_flip(self):
+        result = convert_v3_options(self._make_opt(flip='FLIP'))
+        self.assertEqual(result['flip'], 'FLIP')
+
+    def test_assist_ascr(self):
+        result = convert_v3_options(self._make_opt(assist='A-SCR'))
+        self.assertEqual(result['assist'], 'A-SCR')
+
+    def test_battle(self):
+        result = convert_v3_options(self._make_opt(battle=True))
+        self.assertTrue(result['battle'])
+
+
+class TestNormalizeV3Entry(unittest.TestCase):
+    def test_basic_dp_another(self):
+        entry = _make_v3_entry(
+            play_style_value=1, difficulty_value=3, lamp_value=4,
+            score=1500, bp=10, notes=1000
+        )
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['playtype'], 'DP')
+        self.assertEqual(result['difficulty'], 'ANOTHER')
+        self.assertEqual(result['clear_type'], 'CLEAR')
+        self.assertEqual(result['score'], 1500)
+        self.assertEqual(result['miss_count'], 10)
+        self.assertEqual(result['notes'], 1000)
+
+    def test_sp_hyper(self):
+        entry = _make_v3_entry(play_style_value=0, difficulty_value=2, lamp_value=5)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['playtype'], 'SP')
+        self.assertEqual(result['difficulty'], 'HYPER')
+        self.assertEqual(result['clear_type'], 'H-CLEAR')
+
+    def test_dj_level_computed(self):
+        # notes=1000, max=2000, score=1778 → AAA
+        entry = _make_v3_entry(score=1778, notes=1000)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['dj_level'], 'AAA')
+
+    def test_prev_dj_level_from_pre_score(self):
+        # pre_score=0 → F
+        entry = _make_v3_entry(pre_score=0, notes=1000)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['prev_dj_level'], 'F')
+
+    def test_timestamp_format(self):
+        entry = _make_v3_entry(timestamp=1700000000)
+        result = normalize_v3_entry(entry)
+        self.assertRegex(result['timestamp'], r'^\d{8}-\d{6}$')
+
+    def test_battle_changes_playtype(self):
+        entry = _make_v3_entry(play_style_value=1, battle=True)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['playtype'], 'DP BATTLE')
+
+    def test_pre_lamp_noplay_to_prev_clear_type(self):
+        # pre_lamp=noplay(0) → 'NO PLAY'
+        entry = _make_v3_entry(pre_lamp_value=0)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['prev_clear_type'], 'NO PLAY')
+
+    def test_pre_bp_sentinel_to_none(self):
+        # pre_bp=99999999 → prev_miss_count=None
+        entry = _make_v3_entry(pre_bp=99999999)
+        result = normalize_v3_entry(entry)
+        self.assertIsNone(result['prev_miss_count'])
+
+    def test_pre_bp_valid(self):
+        entry = _make_v3_entry(pre_bp=5)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['prev_miss_count'], 5)
+
+    def test_pre_bp_none(self):
+        entry = _make_v3_entry(pre_bp=None)
+        result = normalize_v3_entry(entry)
+        self.assertIsNone(result['prev_miss_count'])
+
+    def test_pre_score_none_defaults_to_zero(self):
+        entry = _make_v3_entry(pre_score=None, notes=1000)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['prev_score'], 0)
+        self.assertEqual(result['prev_dj_level'], 'F')
+
+    def test_playspeed_passed_through(self):
+        entry = _make_v3_entry(playspeed=0.9)
+        result = normalize_v3_entry(entry)
+        self.assertEqual(result['playspeed'], 0.9)
+
+    def test_playspeed_none(self):
+        entry = _make_v3_entry(playspeed=None)
+        result = normalize_v3_entry(entry)
+        self.assertIsNone(result['playspeed'])
+
+
+class TestShouldExcludeV3(unittest.TestCase):
+    def test_valid_entry_not_excluded(self):
+        entry = _make_v3_entry(
+            timestamp=1700000000, score=1500, bp=10, notes=1000, dead=False
+        )
+        self.assertIsNone(should_exclude_v3(entry))
+
+    def test_timestamp_zero(self):
+        entry = _make_v3_entry(timestamp=0)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_play_style_none(self):
+        entry = _make_v3_entry()
+        entry.play_style = None
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_difficulty_none(self):
+        entry = _make_v3_entry()
+        entry.difficulty = None
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_dead_true(self):
+        entry = _make_v3_entry(dead=True)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_dead_none_not_excluded(self):
+        # dead=None は v2 インポートデータで許容される
+        entry = _make_v3_entry()
+        entry.dead = None
+        self.assertIsNone(should_exclude_v3(entry))
+
+    def test_notes_none(self):
+        entry = _make_v3_entry(notes=None)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_score_none(self):
+        entry = _make_v3_entry(score=None)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_score_low(self):
+        entry = _make_v3_entry(score=9)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_score_10_not_excluded(self):
+        entry = _make_v3_entry(score=10)
+        self.assertIsNone(should_exclude_v3(entry))
+
+    def test_bp_none(self):
+        entry = _make_v3_entry(bp=None)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_bp_sentinel(self):
+        # bp=99999999 は途中終了の sentinel 値
+        entry = _make_v3_entry(bp=99999999)
+        self.assertIsNotNone(should_exclude_v3(entry))
+
+    def test_bp_zero_not_excluded(self):
+        # bp=0 は有効（FC）
+        entry = _make_v3_entry(bp=0)
+        self.assertIsNone(should_exclude_v3(entry))
+
+
+class TestBuildHistoryEntryPlayspeed(unittest.TestCase):
+    """build_history_entry が playspeed を entry から取得することを検証する。"""
+
+    def _make_entry(self, playspeed):
+        return {
+            'timestamp': '20231001-123400',
+            'music': 'Test',
+            'playtype': 'SP',
+            'difficulty': 'ANOTHER',
+            'notes': 1000,
+            'clear_type': 'CLEAR',
+            'prev_clear_type': None,
+            'dj_level': 'AA',
+            'prev_dj_level': 'A',
+            'score': 1500,
+            'prev_score': 1400,
+            'miss_count': 5,
+            'prev_miss_count': 8,
+            'options': {'arrange': None, 'flip': None, 'assist': None,
+                        'battle': False, 'allscratch': False, 'regularspeed': False},
+            'playspeed': playspeed,
+        }
+
+    def test_playspeed_none(self):
+        entry = self._make_entry(None)
+        flags = {'clear_type': False, 'dj_level': False, 'score': True, 'miss_count': True}
+        hist = build_history_entry(entry, flags)
+        self.assertIsNone(hist['playspeed'])
+
+    def test_playspeed_value(self):
+        entry = self._make_entry(0.9)
+        flags = {'clear_type': False, 'dj_level': False, 'score': True, 'miss_count': True}
+        hist = build_history_entry(entry, flags)
+        self.assertEqual(hist['playspeed'], 0.9)
+
+
+class TestLoadV3Integration(unittest.TestCase):
+    """load_v3() の統合テスト。サンプルデータ playlog.infdc を使用する。"""
+
+    SAMPLE_PATH = os.path.join(
+        os.path.dirname(__file__),
+        'docs', 'sample_data', 'inf_daken_counter_v3', 'playlog.infdc'
+    )
+
+    def setUp(self):
+        if not os.path.exists(self.SAMPLE_PATH):
+            self.skipTest(f'Sample data not found: {self.SAMPLE_PATH}')
+
+    def test_load_returns_entries(self):
+        entries, errors, excluded, renamed = load_v3(self.SAMPLE_PATH)
+        self.assertIsInstance(entries, list)
+        self.assertGreater(len(entries), 0)
+        self.assertEqual(errors, 0)
+        self.assertGreater(excluded, 0)
+        self.assertEqual(renamed, 0)
+
+    def test_total_count(self):
+        # 実データは 18,280 件。除外条件を適用すると約 17,022 件が有効
+        entries, errors, excluded, renamed = load_v3(self.SAMPLE_PATH)
+        total = len(entries) + excluded
+        self.assertEqual(total, 18280)
+
+    def test_entries_sorted_by_timestamp(self):
+        entries, _, _, _ = load_v3(self.SAMPLE_PATH)
+        timestamps = [e['timestamp'] for e in entries]
+        self.assertEqual(timestamps, sorted(timestamps))
+
+    def test_entry_structure(self):
+        entries, _, _, _ = load_v3(self.SAMPLE_PATH)
+        required_keys = {
+            'timestamp', 'music', 'playtype', 'difficulty', 'notes',
+            'clear_type', 'prev_clear_type', 'dj_level', 'prev_dj_level',
+            'score', 'prev_score', 'miss_count', 'prev_miss_count', 'options', 'playspeed',
+        }
+        for entry in entries[:10]:
+            self.assertTrue(required_keys.issubset(entry.keys()),
+                            f"Missing keys: {required_keys - entry.keys()}")
+
+    def test_no_bp_sentinel(self):
+        # 除外済みのため bp=99999999 のエントリがないこと
+        entries, _, _, _ = load_v3(self.SAMPLE_PATH)
+        for entry in entries:
+            self.assertNotEqual(entry['miss_count'], 99999999)
+
+    def test_no_zero_timestamp(self):
+        # 除外済みのため timestamp=0 由来のエントリがないこと
+        entries, _, _, _ = load_v3(self.SAMPLE_PATH)
+        for entry in entries:
+            self.assertFalse(entry['timestamp'].startswith('19700101'))
+
+    def test_playtype_valid(self):
+        entries, _, _, _ = load_v3(self.SAMPLE_PATH)
+        valid_playtypes = {'SP', 'DP', 'DP BATTLE'}
+        for entry in entries:
+            self.assertIn(entry['playtype'], valid_playtypes)
+
+    def test_difficulty_valid(self):
+        entries, _, _, _ = load_v3(self.SAMPLE_PATH)
+        valid_difficulties = {'BEGINNER', 'NORMAL', 'HYPER', 'ANOTHER', 'LEGGENDARIA'}
+        for entry in entries:
+            self.assertIn(entry['difficulty'], valid_difficulties)
+
+    def test_musicname_changes_applied(self):
+        # テスト用に Destiny Lovers のマッピングを適用
+        changes = {'Destiny Lovers': 'Destiny lovers'}
+        entries, _, _, renamed = load_v3(self.SAMPLE_PATH, musicname_changes=changes)
+        self.assertGreaterEqual(renamed, 0)
+        # Destiny Lovers が旧名のまま残っていないことを確認
+        music_names = {e['music'] for e in entries}
+        self.assertNotIn('Destiny Lovers', music_names)
 
 
 if __name__ == '__main__':

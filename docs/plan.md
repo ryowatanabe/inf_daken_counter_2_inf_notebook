@@ -170,35 +170,54 @@ best[key] = {"value": current_value, "timestamp": ts, "options": options_dict}
 ```
 定数定義 (CLEAR_TYPES, DJ_LEVELS, DIFFICULTY_MAP)
 DEFAULT_MUSICNAMES_PATH: スクリプト同階層の resources/musicnamechanges.res
+
+--- v2 (alllog.pkl) ---
 parse_play_mode(mode_str) -> (playtype, difficulty)
 convert_timestamp(ts) -> str
 parse_options(opts_str) -> dict
 normalize_entry(entry) -> dict
 should_exclude(entry) -> str | None
+load_alllog(pkl_path, musicname_changes=None) -> (entries, errors, excluded, renamed)
+
+--- v3 (playlog.infdc) ---
+_make_enum_stub(members) -> class
+_V3Unpickler(Unpickler)
+compute_dj_level(score, notes) -> str
+convert_unix_timestamp(ts) -> str
+convert_v3_options(option) -> dict
+normalize_v3_entry(entry) -> dict
+should_exclude_v3(entry) -> str | None
+load_v3(infdc_path, musicname_changes=None) -> (entries, errors, excluded, renamed)
+load_input(path, musicname_changes=None) -> (entries, errors, excluded, renamed)
+
+--- 共通 ---
 compute_new_flags(entry) -> dict
 build_history_entry(entry) -> dict
 load_musicname_changes(path) -> dict[str, str]
-load_alllog(pkl_path, musicname_changes=None) -> (entries, errors, excluded, renamed)
 merge_entries_into_music(music_json, entries) -> (added, skipped)
 generate_achievement(target) -> dict
 generate_summary(records_dir) -> dict
-main(alllog_path, output_dir, musicnames_path)
+main(input_path, output_dir, musicnames_path)
 ```
 
 CLI:
 ```bash
-python migrate.py <alllog.pkl> <output_records_dir> (--musicnames <パス> | --no-musicnames)
+python migrate.py <alllog.pkl|playlog.infdc> <output_records_dir> (--musicnames <パス> | --no-musicnames)
 ```
 
-`--musicnames` と `--no-musicnames` のどちらかは必須。省略するとエラー。
+`--musicnames` と `--no-musicnames` のどちらかは必須。省略するとエラー。入力ファイルの形式は拡張子で自動判定（`.infdc` → v3、それ以外 → v2）。
 
 ## 主要参照ファイル
-- `docs/sample_data/inf_daken_counter/alllog.pkl` - 入力サンプル
+- `docs/sample_data/inf_daken_counter/alllog.pkl` - v2 入力サンプル
+- `docs/sample_data/inf_daken_counter_v3/playlog.infdc` - v3 入力サンプル（18,280件）
 - `docs/sample_data/inf_notebook/*.json` - 出力サンプル
 - `../inf-notebook.master/record.py` - NotebookMusic (insert/best/achievement ロジック)
 - `../inf-notebook.master/define.py` - 定数定義 (clear_types, dj_levels 等)
 - `../inf-notebook.master/versioncheck.py` - バージョン文字列の形式
 - `/mnt/c/Users/ryo/git/inf-notebook/resources/musicnamechanges.res` - 実際に動いている inf_notebook の楽曲名修正マッピング（.master より新しい場合がある）
+- `../inf_daken_counter.v3/src/result.py` - OneResult, PlayOption クラス定義
+- `../inf_daken_counter.v3/src/classes.py` - Enum 定義 (clear_lamp, play_style 等)
+- `../inf_daken_counter.v3/src/config_dialog.py:84` - PklImportWorker（v2→v3 変換ロジック）
 
 ## 既知の問題と対応（実装済み）
 
@@ -220,7 +239,11 @@ inf_notebook は `json.dump(data, f)` を引数なしで呼び出している（
 
 ## 検証方法
 
-1. **ユニットテスト** (`test_migrate.py`):
+```bash
+python -m unittest test_migrate -v  # 153件
+```
+
+1. **v2 ユニットテスト** (`test_migrate.py`):
    - parse_play_mode, convert_timestamp, parse_options の各パターン
    - new フラグ計算のエッジケース
    - マージ処理の重複排除（完全一致・同一分内）
@@ -229,13 +252,18 @@ inf_notebook は `json.dump(data, f)` を引数なしで呼び出している（
    - 楽曲名修正マッピングの適用・カウント
    - summary の全プレイタイプキー存在確認
 
-2. **サンプルデータによる統合テスト**:
-   - `docs/sample_data/inf_daken_counter/alllog.pkl` を入力として実行
-   - 出力と `docs/sample_data/inf_notebook/*.json` を比較
-   - 曲数、エントリ数、best値の整合性を確認
+2. **v3 ユニットテスト** (`test_migrate.py`):
+   - `compute_dj_level()`: 全 DJ LEVEL 境界値
+   - `convert_unix_timestamp()`: フォーマット変換
+   - `convert_v3_options()`: arrange 正規化（v2略称/v3フルネーム混在）
+   - `normalize_v3_entry()`: OneResult → dict 変換（正常系/pre_*=None/BATTLE）
+   - `should_exclude_v3()`: 全除外条件の検証
+   - `load_v3()` 統合テスト: playlog.infdc 読み込み・件数・エントリ構造
 
-3. **マージテスト**:
-   - 空ディレクトリに移行 → 同ディレクトリに再度移行 → 重複なし・同一結果を確認
+3. **サンプルデータによる統合テスト**:
+   - `docs/sample_data/inf_daken_counter/alllog.pkl` を入力として実行
+   - `docs/sample_data/inf_daken_counter_v3/playlog.infdc` を入力として実行
+   - v2 → v3 マージ（重複がスキップされ v3 ネイティブのみ追加されることを確認）
 
 4. **移行レポート**:
    - 処理曲数、エントリ数、スキップ数、除外数、楽曲名修正数、エラー数を標準出力に表示
