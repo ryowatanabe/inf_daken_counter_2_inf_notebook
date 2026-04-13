@@ -453,10 +453,14 @@ def merge_entries_into_music(music_json: dict, entries: list[dict]) -> tuple[int
             target['timestamps'].sort()
 
             # best を全履歴から再計算
+            # 速度変更ありのプレイ (playspeed != None) は best 判定から除外する
+            # (inf_notebook も playspeed is None の場合のみ best を更新する)
             best: dict = {}
             for ts in target['timestamps']:
                 hist = target['history'].get(ts)
                 if hist is None:
+                    continue
+                if hist.get('playspeed') is not None:
                     continue
                 best['latest'] = ts
                 opts = hist.get('options')

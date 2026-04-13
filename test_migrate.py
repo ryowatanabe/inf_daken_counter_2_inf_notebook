@@ -371,6 +371,34 @@ class TestMergeEntriesIntoMusic(unittest.TestCase):
         latest = music_json['SP']['ANOTHER']['latest']
         self.assertEqual(latest['timestamp'], '20230101-130000')
 
+    def test_speed_modified_play_not_in_best(self):
+        """速度変更ありのプレイ (playspeed != None) は best 判定から除外される"""
+        music_json = {}
+        # 通常速度で score=900
+        merge_entries_into_music(music_json, [self._make_entry('20230101-120000', score=900, prev_score=800)])
+
+        # 速度変更ありのプレイ (score=9999) を手動で history に追加
+        ts_speed = '20230101-130042'
+        music_json['SP']['ANOTHER']['timestamps'].append(ts_speed)
+        music_json['SP']['ANOTHER']['history'][ts_speed] = {
+            'clear_type': {'value': 'F-COMBO', 'new': True},
+            'dj_level': {'value': 'AAA', 'new': True},
+            'score': {'value': 9999, 'new': True},
+            'miss_count': {'value': 0, 'new': True},
+            'options': {'arrange': None, 'flip': None, 'assist': None,
+                        'battle': False, 'allscratch': None, 'regularspeed': None},
+            'playspeed': 1.5,  # 速度変更あり
+        }
+
+        # 速度変更なしエントリを1件追加してマージ再計算をトリガー
+        merge_entries_into_music(music_json, [self._make_entry('20230101-140000', score=950, prev_score=900)])
+
+        best = music_json['SP']['ANOTHER']['best']
+        # 速度変更ありの 9999 は反映されず、通常速度の最高値 950 が best
+        self.assertEqual(best['score']['value'], 950)
+        # latest は速度変更なしの最新プレイ
+        self.assertEqual(best['latest'], '20230101-140000')
+
 
 class TestGenerateAchievement(unittest.TestCase):
     def _make_target(self, entries):
