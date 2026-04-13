@@ -19,6 +19,7 @@ from migrate import (
     generate_achievement,
     generate_summary,
     load_alllog,
+    load_musicname_changes,
     merge_entries_into_music,
     music_filename,
     normalize_entry,
@@ -573,6 +574,128 @@ class TestMusicFilename(unittest.TestCase):
         self.assertEqual(decoded, name)
 
 
+class TestLoadMusicnameChanges(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_res(self, data):
+        path = os.path.join(self.tmpdir, 'test.res')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        return path
+
+    def test_loads_mapping(self):
+        path = self._write_res([['旧名', '新名'], ['old', 'new']])
+        mapping = load_musicname_changes(path)
+        self.assertEqual(mapping['旧名'], '新名')
+        self.assertEqual(mapping['old'], 'new')
+
+    def test_nonexistent_file_returns_empty(self):
+        mapping = load_musicname_changes('/nonexistent/path/file.res')
+        self.assertEqual(mapping, {})
+
+    def test_invalid_json_returns_empty(self):
+        path = os.path.join(self.tmpdir, 'bad.res')
+        with open(path, 'w') as f:
+            f.write('not json')
+        mapping = load_musicname_changes(path)
+        self.assertEqual(mapping, {})
+
+    def test_default_file_loads_correctly(self):
+        """リポジトリ内のデフォルト musicnamechanges.res が正しく読み込まれる"""
+        from migrate import DEFAULT_MUSICNAMES_PATH
+        mapping = load_musicname_changes(DEFAULT_MUSICNAMES_PATH)
+        self.assertIsInstance(mapping, dict)
+        self.assertGreater(len(mapping), 0)
+
+    def test_default_file_contains_known_renames(self):
+        """既知の楽曲名修正エントリが含まれること"""
+        from migrate import DEFAULT_MUSICNAMES_PATH
+        mapping = load_musicname_changes(DEFAULT_MUSICNAMES_PATH)
+        # 共犯へヴンズコード -> 共犯ヘヴンズコード
+        self.assertIn('共犯へヴンズコード', mapping)
+        self.assertEqual(mapping['共犯へヴンズコード'], '共犯ヘヴンズコード')
+        # 栄光のカンパネラ -> 栄冠のカンパネラ
+        self.assertIn('栄光のカンパネラ', mapping)
+        self.assertEqual(mapping['栄光のカンパネラ'], '栄冠のカンパネラ')
+        # Destiny Lovers -> Destiny lovers
+        self.assertIn('Destiny Lovers', mapping)
+        self.assertEqual(mapping['Destiny Lovers'], 'Destiny lovers')
+
+
+class TestLoadAllogWithMusicnameChanges(unittest.TestCase):
+    """load_alllog の楽曲名修正マッピング適用テスト"""
+
+    def _make_raw_entry(self, music_name, timestamp='2024-06-01-12-30'):
+        """14要素のサンプル alllog エントリを作る（楽曲名のみ変える）"""
+        return ['10', music_name, 'SPA', 900, 'A', 'A', 'CLEAR', 'CLEAR',
+                1000, 1050, 10, 8, 'OFF / OFF', timestamp]
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_pkl(self, entries):
+        path = os.path.join(self.tmpdir, 'alllog.pkl')
+        with open(path, 'wb') as f:
+            pickle.dump(entries, f)
+        return path
+
+    def test_rename_applied(self):
+        """マッピングにある旧名が新名に変換される"""
+        raw = [self._make_raw_entry('旧曲名')]
+        pkl_path = self._write_pkl(raw)
+        mapping = {'旧曲名': '新曲名'}
+        entries, errors, excluded, renamed = load_alllog(pkl_path, mapping)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['music'], '新曲名')
+        self.assertEqual(renamed, 1)
+        self.assertEqual(errors, 0)
+
+    def test_rename_not_in_mapping_unchanged(self):
+        """マッピングにない楽曲名は変更されない"""
+        raw = [self._make_raw_entry('変更されない曲')]
+        pkl_path = self._write_pkl(raw)
+        mapping = {'旧曲名': '新曲名'}
+        entries, errors, excluded, renamed = load_alllog(pkl_path, mapping)
+        self.assertEqual(entries[0]['music'], '変更されない曲')
+        self.assertEqual(renamed, 0)
+
+    def test_no_mapping_none(self):
+        """mapping=None の場合は楽曲名を変更しない"""
+        raw = [self._make_raw_entry('旧曲名')]
+        pkl_path = self._write_pkl(raw)
+        entries, errors, excluded, renamed = load_alllog(pkl_path, None)
+        self.assertEqual(entries[0]['music'], '旧曲名')
+        self.assertEqual(renamed, 0)
+
+    def test_no_mapping_empty_dict(self):
+        """空の mapping dict の場合も楽曲名を変更しない"""
+        raw = [self._make_raw_entry('旧曲名')]
+        pkl_path = self._write_pkl(raw)
+        entries, errors, excluded, renamed = load_alllog(pkl_path, {})
+        self.assertEqual(entries[0]['music'], '旧曲名')
+        self.assertEqual(renamed, 0)
+
+    def test_renamed_count_multiple(self):
+        """複数エントリでリネームカウントが正しく集計される"""
+        raw = [
+            self._make_raw_entry('旧曲名', '2024-06-01-12-00'),
+            self._make_raw_entry('旧曲名', '2024-06-01-13-00'),
+            self._make_raw_entry('別の曲', '2024-06-01-14-00'),
+        ]
+        pkl_path = self._write_pkl(raw)
+        mapping = {'旧曲名': '新曲名'}
+        entries, errors, excluded, renamed = load_alllog(pkl_path, mapping)
+        self.assertEqual(renamed, 2)
+        self.assertEqual(len(entries), 3)
+
+
 class TestGenerateSummary(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -656,7 +779,7 @@ class TestIntegration(unittest.TestCase):
         if not os.path.exists(self.ALLLOG_PATH):
             self.skipTest("alllog.pkl not found")
 
-        entries, errors, excluded = load_alllog(self.ALLLOG_PATH)
+        entries, errors, excluded, renamed = load_alllog(self.ALLLOG_PATH)
         self.assertGreater(len(entries), 0)
         self.assertEqual(errors, 0)
 
@@ -681,7 +804,7 @@ class TestIntegration(unittest.TestCase):
         if not os.path.exists(self.ALLLOG_PATH):
             self.skipTest("alllog.pkl not found")
 
-        entries, _, _excluded = load_alllog(self.ALLLOG_PATH)
+        entries, _, _excluded, _renamed = load_alllog(self.ALLLOG_PATH)
         music_entries = {}
         for entry in entries:
             music_entries.setdefault(entry['music'], []).append(entry)
@@ -734,7 +857,7 @@ class TestIntegration(unittest.TestCase):
                         original_timestamps.setdefault(fname, set()).add(ts)
 
         # マージ実行
-        entries, _, _excluded = load_alllog(self.ALLLOG_PATH)
+        entries, _, _excluded, _renamed = load_alllog(self.ALLLOG_PATH)
         music_entries = {}
         for entry in entries:
             music_entries.setdefault(entry['music'], []).append(entry)

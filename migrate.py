@@ -2,7 +2,8 @@
 inf_daken_counter の alllog.pkl を inf_notebook の JSON 形式に移行するスクリプト
 
 Usage:
-    python migrate.py <alllog.pkl> <output_records_dir>
+    python migrate.py <alllog.pkl> <output_records_dir> [--no-musicnames]
+    python migrate.py <alllog.pkl> <output_records_dir> --musicnames <path>
 
 既存データがある場合はマージ（重複タイムスタンプは無視）します。
 recent.json は alllog に UI 情報がないため生成しません。
@@ -13,6 +14,10 @@ import os
 import pickle
 import sys
 from copy import deepcopy
+
+# スクリプトと同じリポジトリの resources/ にあるデフォルトのマッピングファイル
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_MUSICNAMES_PATH = os.path.join(_SCRIPT_DIR, 'resources', 'musicnamechanges.res')
 
 
 # ---------- 定数定義 ----------
@@ -600,6 +605,23 @@ def generate_summary(records_dir: str) -> dict:
     return summary
 
 
+# ---------- 楽曲名修正マッピング ----------
+
+def load_musicname_changes(path: str) -> dict[str, str]:
+    """musicnamechanges.res を読み込み、旧名→新名の dict を返す。
+
+    ファイルが存在しない場合や解析失敗の場合は空 dict を返す。
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return {old: new for old, new in data}
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {}
+
+
 # ---------- alllog.pkl 読み込み ----------
 
 def should_exclude(entry: dict) -> str | None:
@@ -616,11 +638,15 @@ def should_exclude(entry: dict) -> str | None:
     return None
 
 
-def load_alllog(pkl_path: str) -> list[dict]:
+def load_alllog(pkl_path: str, musicname_changes: dict[str, str] | None = None) -> list[dict]:
     """alllog.pkl を読み込み、正規化・フィルタ済みの dict リストを返す（タイムスタンプ昇順）。
 
+    Args:
+        pkl_path: alllog.pkl のパス
+        musicname_changes: 旧楽曲名→新楽曲名のマッピング dict（None の場合は適用しない）
+
     Returns:
-        (entries, parse_errors, excluded_count)
+        (entries, parse_errors, excluded_count, renamed_count)
     """
     with open(pkl_path, 'rb') as f:
         raw_list = pickle.load(f)
@@ -628,6 +654,7 @@ def load_alllog(pkl_path: str) -> list[dict]:
     entries = []
     errors = 0
     excluded = 0
+    renamed = 0
     for i, raw in enumerate(raw_list):
         try:
             entry = normalize_entry(raw)
@@ -635,6 +662,14 @@ def load_alllog(pkl_path: str) -> list[dict]:
             print(f"  [WARN] Entry {i} skipped: {e}", file=sys.stderr)
             errors += 1
             continue
+
+        # 楽曲名修正マッピングを適用
+        if musicname_changes:
+            old_name = entry['music']
+            new_name = musicname_changes.get(old_name)
+            if new_name is not None:
+                entry['music'] = new_name
+                renamed += 1
 
         reason = should_exclude(entry)
         if reason:
@@ -644,21 +679,36 @@ def load_alllog(pkl_path: str) -> list[dict]:
         entries.append(entry)
 
     entries.sort(key=lambda e: e['timestamp'])
-    return entries, errors, excluded
+    return entries, errors, excluded, renamed
 
 
 # ---------- メイン処理 ----------
 
-def main(alllog_path: str, output_dir: str) -> None:
+def main(alllog_path: str, output_dir: str, musicnames_path: str | None = DEFAULT_MUSICNAMES_PATH) -> None:
+    """
+    Args:
+        alllog_path: alllog.pkl のパス
+        output_dir: 出力先 records ディレクトリ
+        musicnames_path: musicnamechanges.res のパス。None の場合は楽曲名修正を行わない。
+    """
     print(f"Input:  {alllog_path}")
     print(f"Output: {output_dir}")
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # 楽曲名修正マッピングを読み込む
+    musicname_changes: dict[str, str] | None = None
+    if musicnames_path is not None:
+        musicname_changes = load_musicname_changes(musicnames_path)
+        if musicname_changes:
+            print(f"Music name changes: {len(musicname_changes)} entries loaded from {musicnames_path}")
+
     # 1. alllog.pkl 読み込み
     print("Loading alllog.pkl ...")
-    entries, load_errors, excluded = load_alllog(alllog_path)
+    entries, load_errors, excluded, renamed = load_alllog(alllog_path, musicname_changes)
     print(f"  Loaded {len(entries)} entries ({load_errors} errors, {excluded} excluded)")
+    if renamed > 0:
+        print(f"  Music names renamed: {renamed}")
 
     # 2. 曲別にグループ化
     music_entries: dict[str, list[dict]] = {}
@@ -699,13 +749,42 @@ def main(alllog_path: str, output_dir: str) -> None:
     print(f"  Entries added   : {total_added}")
     print(f"  Entries skipped : {total_skipped} (duplicates)")
     print(f"  Entries excluded: {excluded} (score<10 or miss_count=None)")
+    if renamed > 0:
+        print(f"  Names renamed   : {renamed}")
     print(f"  Load errors     : {load_errors}")
     print(f"  summary.json    : {len(summary['musics'])} songs")
     print("Done.")
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 3:
-        print(f"Usage: python {sys.argv[0]} <alllog.pkl> <output_records_dir>")
-        sys.exit(1)
-    main(sys.argv[1], sys.argv[2])
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='inf_daken_counter の alllog.pkl を inf_notebook の JSON 形式に移行する'
+    )
+    parser.add_argument('alllog_pkl', help='alllog.pkl のパス')
+    parser.add_argument('output_records_dir', help='出力先 records ディレクトリ')
+
+    musicnames_group = parser.add_mutually_exclusive_group()
+    musicnames_group.add_argument(
+        '--musicnames',
+        metavar='PATH',
+        default=None,
+        help=f'musicnamechanges.res のパス（デフォルト: {DEFAULT_MUSICNAMES_PATH}）',
+    )
+    musicnames_group.add_argument(
+        '--no-musicnames',
+        action='store_true',
+        help='楽曲名修正マッピングを適用しない',
+    )
+
+    args = parser.parse_args()
+
+    if args.no_musicnames:
+        musicnames_path = None
+    elif args.musicnames:
+        musicnames_path = args.musicnames
+    else:
+        musicnames_path = DEFAULT_MUSICNAMES_PATH
+
+    main(args.alllog_pkl, args.output_records_dir, musicnames_path)
