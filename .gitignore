@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+
+# Claude Code
+.claude/
+.mcp.json
+
+# ホームディレクトリ由来のドットファイル
+.bash_profile
+.bashrc
+.zshrc
+.zprofile
+.profile
+.gitconfig
+.ripgreprc
+
+# IDE
+.vscode
+.idea
