@@ -153,12 +153,23 @@ best[key] = {"value": current_value, "timestamp": ts, "options": options_dict}
 ```
 注意: summary では `clear_type` → `cleartype`, `dj_level` → `djlevel`, `miss_count` → `misscount` とキー名が異なる。
 
+各曲のエントリは `'SP'`, `'DP'`, `'DP BATTLE'` の3キーを**必ず初期化**してから実データを埋める。`notesradar.py` が両キーの存在を前提にアクセスするため、データのないプレイタイプも空 dict として存在しなければならない。
+
+### 11. 楽曲名修正マッピング
+`load_alllog()` 内で `normalize_entry()` 後に `entry['music']` をマッピング dict で置換する。
+
+マッピングファイル:
+- **形式**: JSON 配列 `[[旧名, 新名], ...]`（inf_notebook の `resources/musicnamechanges.res` と同形式）
+- **テスト用**: `resources/musicnamechanges.res` をリポジトリ内に同梱
+- **実際の利用**: inf_notebook に含まれる最新ファイルを `--musicnames` で指定すること（内容は今後変わりうる）
+
 ## スクリプト構成
 
 **ファイル**: `migrate.py`（プロジェクトルートに1ファイル）
 
 ```
 定数定義 (CLEAR_TYPES, DJ_LEVELS, DIFFICULTY_MAP)
+DEFAULT_MUSICNAMES_PATH: スクリプト同階層の resources/musicnamechanges.res
 parse_play_mode(mode_str) -> (playtype, difficulty)
 convert_timestamp(ts) -> str
 parse_options(opts_str) -> dict
@@ -166,16 +177,20 @@ normalize_entry(entry) -> dict
 should_exclude(entry) -> str | None
 compute_new_flags(entry) -> dict
 build_history_entry(entry) -> dict
+load_musicname_changes(path) -> dict[str, str]
+load_alllog(pkl_path, musicname_changes=None) -> (entries, errors, excluded, renamed)
 merge_entries_into_music(music_json, entries) -> (added, skipped)
 generate_achievement(target) -> dict
 generate_summary(records_dir) -> dict
-main(alllog_path, output_dir)
+main(alllog_path, output_dir, musicnames_path)
 ```
 
 CLI:
 ```bash
-python migrate.py <alllog.pkl> <output_records_dir>
+python migrate.py <alllog.pkl> <output_records_dir> (--musicnames <パス> | --no-musicnames)
 ```
+
+`--musicnames` と `--no-musicnames` のどちらかは必須。省略するとエラー。
 
 ## 主要参照ファイル
 - `docs/sample_data/inf_daken_counter/alllog.pkl` - 入力サンプル
@@ -183,8 +198,9 @@ python migrate.py <alllog.pkl> <output_records_dir>
 - `../inf-notebook.master/record.py` - NotebookMusic (insert/best/achievement ロジック)
 - `../inf-notebook.master/define.py` - 定数定義 (clear_types, dj_levels 等)
 - `../inf-notebook.master/versioncheck.py` - バージョン文字列の形式
+- `/mnt/c/Users/ryo/git/inf-notebook/resources/musicnamechanges.res` - 実際に動いている inf_notebook の楽曲名修正マッピング（.master より新しい場合がある）
 
-## 既知の問題と対応
+## 既知の問題と対応（実装済み）
 
 ### `fromhistoriesgenerate_lastversion` のバージョン文字列
 
@@ -192,14 +208,26 @@ inf_notebook の `versioncheck.py` は各ドット区切りセグメントから
 
 移行スクリプトでは `'0.0.0'` を設定する。これにより inf_notebook が曲データ読込時に achievement を最新ロジックで自動再生成する。
 
+### summary.json のプレイタイプキー欠落による KeyError
+
+`notesradar.py:107` が `summary[musicname][playmode]` にキー存在チェックなしでアクセスするため、SP/DP どちらか一方のデータしかない曲で `KeyError` が発生する。
+
+`generate_summary()` で各曲のエントリを構築する際、`'SP'`, `'DP'`, `'DP BATTLE'` の3キーを常に初期化してから実データを埋めることで対応。
+
+### JSON エンコード形式
+
+inf_notebook は `json.dump(data, f)` を引数なしで呼び出している（`record.py:54`）。移行スクリプトも同じ形式に揃える。
+
 ## 検証方法
 
 1. **ユニットテスト** (`test_migrate.py`):
    - parse_play_mode, convert_timestamp, parse_options の各パターン
    - new フラグ計算のエッジケース
-   - マージ処理の重複排除
+   - マージ処理の重複排除（完全一致・同一分内）
    - 除外条件（score<10, miss_count=None）
    - 速度変更ありのプレイの best 除外
+   - 楽曲名修正マッピングの適用・カウント
+   - summary の全プレイタイプキー存在確認
 
 2. **サンプルデータによる統合テスト**:
    - `docs/sample_data/inf_daken_counter/alllog.pkl` を入力として実行
@@ -210,4 +238,4 @@ inf_notebook の `versioncheck.py` は各ドット区切りセグメントから
    - 空ディレクトリに移行 → 同ディレクトリに再度移行 → 重複なし・同一結果を確認
 
 4. **移行レポート**:
-   - 処理曲数、エントリ数、スキップ数、除外数、エラー数を標準出力に表示
+   - 処理曲数、エントリ数、スキップ数、除外数、楽曲名修正数、エラー数を標準出力に表示
