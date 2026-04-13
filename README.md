@@ -2,6 +2,14 @@
 
 inf_daken_counter の保存データ（`alllog.pkl`）を inf_notebook の JSON 形式に変換・移行するスクリプトです。
 
+## 免責事項・注意事項
+
+> [!WARNING]
+> - このプログラムは厳密に検証されていないため、**意図せぬデータ破損が発生する可能性があります**
+> - プログラムの実行前に、更新対象となる inf_notebook のデータを**必ずバックアップしてください**
+> - 入力データ（`alllog.pkl`）はこのスクリプトによって変更されません（読み取り専用）
+> - 移行後のデータは inf_notebook で動作確認を行ってください
+
 ## 概要
 
 - **入力**: inf_daken_counter が生成する `alllog.pkl`
@@ -96,3 +104,7 @@ python -m unittest test_migrate -v
 |---|---|
 | `docs/sample_data/inf_daken_counter/alllog.pkl` | 移行元データのサンプル（17,535件） |
 | `docs/sample_data/inf_notebook/` | 移行先データのサンプル（1,558曲） |
+
+## ライセンス
+
+[LICENSE](LICENSE) ファイルを参照してください。
