@@ -1,6 +1,6 @@
 # inf_daken_counter_2_inf_notebook
 
-打鍵カウンタ (inf_daken_counter) の保存データ（`alllog.pkl`）を リザルト手帳 (inf_notebook) の JSON 形式に変換・移行するスクリプトです。
+打鍵カウンタ (inf_daken_counter) の保存データ（v2 `alllog.pkl`, v3 `playlog.infdc`）を リザルト手帳 (inf_notebook) の JSON 形式に変換・移行するスクリプトです。
 
 ## 免責事項・注意事項
 
