@@ -559,7 +559,10 @@ def generate_summary(records_dir: str) -> dict:
         except (json.JSONDecodeError, OSError):
             continue
 
-        music_summary: dict = {}
+        # NotebookSummary と同様に SP / DP / DP BATTLE を必ず初期化する。
+        # notesradar.py は SP・DP キーの存在を前提にアクセスするため、
+        # データのないプレイタイプも空 dict として存在しなければならない。
+        music_summary: dict = {'SP': {}, 'DP': {}, 'DP BATTLE': {}}
         for playtype, diffs in data.items():
             pt_summary: dict = {}
             for difficulty, target in diffs.items():
@@ -567,7 +570,7 @@ def generate_summary(records_dir: str) -> dict:
                 best = target.get('best', {})
                 achievement = target.get('achievement')
 
-                def _best_entry(key_in_best: str, summary_key: str) -> dict | None:
+                def _best_entry(key_in_best: str) -> dict | None:
                     val = best.get(key_in_best)
                     if val is None:
                         return None
@@ -581,10 +584,10 @@ def generate_summary(records_dir: str) -> dict:
                     'latest': timestamps[-1] if timestamps else None,
                     'playcount': len(timestamps),
                     'best': {
-                        'cleartype': _best_entry('clear_type', 'cleartype'),
-                        'djlevel': _best_entry('dj_level', 'djlevel'),
-                        'score': _best_entry('score', 'score'),
-                        'misscount': _best_entry('miss_count', 'misscount'),
+                        'cleartype': _best_entry('clear_type'),
+                        'djlevel': _best_entry('dj_level'),
+                        'score': _best_entry('score'),
+                        'misscount': _best_entry('miss_count'),
                     },
                     'achievement': achievement,
                 }
@@ -592,8 +595,7 @@ def generate_summary(records_dir: str) -> dict:
             if pt_summary:
                 music_summary[playtype] = pt_summary
 
-        if music_summary:
-            summary['musics'][music_name] = music_summary
+        summary['musics'][music_name] = music_summary
 
     return summary
 

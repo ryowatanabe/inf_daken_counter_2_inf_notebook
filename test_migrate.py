@@ -573,6 +573,72 @@ class TestMusicFilename(unittest.TestCase):
         self.assertEqual(decoded, name)
 
 
+class TestGenerateSummary(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_music(self, music_name, data):
+        save_music_json(self.tmpdir, music_name, data)
+
+    def test_all_playtypes_always_present(self):
+        """DP のみのデータでも summary に SP / DP / DP BATTLE キーが存在する"""
+        self._write_music('DP Only Song', {
+            'DP': {
+                'ANOTHER': {
+                    'notes': 1000,
+                    'timestamps': ['20230101-120000'],
+                    'history': {'20230101-120000': {
+                        'clear_type': {'value': 'CLEAR', 'new': False},
+                        'dj_level': {'value': 'A', 'new': False},
+                        'score': {'value': 1000, 'new': False},
+                        'miss_count': {'value': 10, 'new': False},
+                        'options': None, 'playspeed': None,
+                    }},
+                    'best': {},
+                }
+            }
+        })
+        summary = generate_summary(self.tmpdir)
+        entry = summary['musics']['DP Only Song']
+        self.assertIn('SP', entry)
+        self.assertIn('DP', entry)
+        self.assertIn('DP BATTLE', entry)
+        # SP と DP BATTLE はデータなしなので空 dict
+        self.assertEqual(entry['SP'], {})
+        self.assertEqual(entry['DP BATTLE'], {})
+        # DP にはデータがある
+        self.assertIn('ANOTHER', entry['DP'])
+
+    def test_sp_only_song(self):
+        """SP のみのデータでも DP / DP BATTLE キーが存在する"""
+        self._write_music('SP Only Song', {
+            'SP': {
+                'HYPER': {
+                    'notes': 800,
+                    'timestamps': ['20230101-120000'],
+                    'history': {'20230101-120000': {
+                        'clear_type': {'value': 'H-CLEAR', 'new': False},
+                        'dj_level': {'value': 'AA', 'new': False},
+                        'score': {'value': 1400, 'new': False},
+                        'miss_count': {'value': 5, 'new': False},
+                        'options': None, 'playspeed': None,
+                    }},
+                    'best': {},
+                }
+            }
+        })
+        summary = generate_summary(self.tmpdir)
+        entry = summary['musics']['SP Only Song']
+        self.assertIn('SP', entry)
+        self.assertIn('DP', entry)
+        self.assertIn('DP BATTLE', entry)
+        self.assertEqual(entry['DP'], {})
+        self.assertEqual(entry['DP BATTLE'], {})
+
+
 class TestIntegration(unittest.TestCase):
     """サンプルデータを使った統合テスト"""
 
