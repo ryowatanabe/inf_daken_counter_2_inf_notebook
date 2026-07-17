@@ -1,0 +1,133 @@
+{
+  "DP": {
+    "HYPER": {
+      "notes": 386,
+      "timestamps": [
+        "20241204-232600"
+      ],
+      "history": {
+        "20241204-232600": {
+          "clear_type": {
+            "value": "EXH-CLEAR",
+            "new": true
+          },
+          "dj_level": {
+            "value": "AA",
+            "new": true
+          },
+          "score": {
+            "value": 0,
+            "new": false
+          },
+          "miss_count": {
+            "value": 1,
+            "new": true
+          },
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          },
+          "playspeed": null
+        }
+      },
+      "best": {
+        "latest": "20241204-232600",
+        "clear_type": {
+          "value": "EXH-CLEAR",
+          "timestamp": "20241204-232600",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        },
+        "dj_level": {
+          "value": "AA",
+          "timestamp": "20241204-232600",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        },
+        "score": {
+          "value": 0,
+          "timestamp": "20241204-232600",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        },
+        "miss_count": {
+          "value": 1,
+          "timestamp": "20241204-232600",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        }
+      },
+      "latest": {
+        "timestamp": "20241204-232600",
+        "clear_type": {
+          "value": "EXH-CLEAR",
+          "new": true
+        },
+        "dj_level": {
+          "value": "AA",
+          "new": true
+        },
+        "score": {
+          "value": 0,
+          "new": false
+        },
+        "miss_count": {
+          "value": 1,
+          "new": true
+        },
+        "options": {
+          "arrange": null,
+          "flip": null,
+          "assist": null,
+          "battle": false,
+          "allscratch": null,
+          "regularspeed": null
+        },
+        "playspeed": null
+      },
+      "achievement": {
+        "fixed": {
+          "clear_type": "EXH-CLEAR",
+          "dj_level": "AA"
+        },
+        "S-RANDOM": {
+          "clear_type": null,
+          "dj_level": null
+        },
+        "ALL-SCR": {
+          "clear_type": null,
+          "dj_level": null
+        },
+        "fromhistoriesgenerate_lastversion": "migration"
+      }
+    }
+  }
+}

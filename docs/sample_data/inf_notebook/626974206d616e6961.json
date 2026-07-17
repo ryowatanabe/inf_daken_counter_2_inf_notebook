@@ -1,0 +1,134 @@
+{
+  "DP": {
+    "HYPER": {
+      "notes": 643,
+      "timestamps": [
+        "20231120-234500"
+      ],
+      "history": {
+        "20231120-234500": {
+          "clear_type": {
+            "value": "F-COMBO",
+            "new": true
+          },
+          "dj_level": {
+            "value": "AAA",
+            "new": true
+          },
+          "score": {
+            "value": 1169,
+            "new": true
+          },
+          "miss_count": {
+            "value": 0,
+            "new": true
+          },
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          },
+          "playspeed": null
+        }
+      },
+      "best": {
+        "latest": "20231120-234500",
+        "clear_type": {
+          "value": "F-COMBO",
+          "timestamp": "20231120-234500",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        },
+        "dj_level": {
+          "value": "AAA",
+          "timestamp": "20231120-234500",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        },
+        "score": {
+          "value": 1169,
+          "timestamp": "20231120-234500",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        },
+        "miss_count": {
+          "value": 0,
+          "timestamp": "20231120-234500",
+          "options": {
+            "arrange": null,
+            "flip": null,
+            "assist": null,
+            "battle": false,
+            "allscratch": null,
+            "regularspeed": null
+          }
+        }
+      },
+      "latest": {
+        "timestamp": "20231120-234500",
+        "clear_type": {
+          "value": "F-COMBO",
+          "new": true
+        },
+        "dj_level": {
+          "value": "AAA",
+          "new": true
+        },
+        "score": {
+          "value": 1169,
+          "new": true
+        },
+        "miss_count": {
+          "value": 0,
+          "new": true
+        },
+        "options": {
+          "arrange": null,
+          "flip": null,
+          "assist": null,
+          "battle": false,
+          "allscratch": null,
+          "regularspeed": null
+        },
+        "playspeed": null
+      },
+      "achievement": {
+        "fixed": {
+          "clear_type": "F-COMBO",
+          "dj_level": "AAA",
+          "F-COMBO & AAA": true
+        },
+        "S-RANDOM": {
+          "clear_type": null,
+          "dj_level": null
+        },
+        "ALL-SCR": {
+          "clear_type": null,
+          "dj_level": null
+        },
+        "fromhistoriesgenerate_lastversion": "migration"
+      }
+    }
+  }
+}
