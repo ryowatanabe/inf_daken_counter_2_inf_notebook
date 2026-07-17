@@ -41,6 +41,7 @@ from migrate import (
     parse_options,
     parse_play_mode,
     repair_invalid_versions,
+    repair_summary,
     save_music_json,
     load_music_json,
     should_exclude,
@@ -886,6 +887,124 @@ class TestRepairInvalidVersions(unittest.TestCase):
 
         repaired = repair_invalid_versions(self.tmpdir)
         self.assertEqual(repaired, 0)
+
+
+class TestRepairSummary(unittest.TestCase):
+    """summary.json の last_allimported 修復処理のテスト"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.summary_path = os.path.join(self.tmpdir, 'summary.json')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_summary(self, data):
+        with open(self.summary_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+
+    def _read_summary(self):
+        with open(self.summary_path, encoding='utf-8') as f:
+            return json.load(f)
+
+    def test_migration_replaced(self):
+        """'migration' が '0.0.0' に置換され、musics は変更されないこと"""
+        self._write_summary({'last_allimported': 'migration', 'musics': {'Song A': {'SP': {}}}})
+        self.assertTrue(repair_summary(self.tmpdir))
+        self.assertEqual(
+            self._read_summary(),
+            {'last_allimported': '0.0.0', 'musics': {'Song A': {'SP': {}}}},
+        )
+
+    def test_valid_version_untouched(self):
+        """数字を含む正常なバージョン値は書き換えられないこと"""
+        self._write_summary({'last_allimported': '0.23.1.1', 'musics': {}})
+        self.assertFalse(repair_summary(self.tmpdir))
+        self.assertEqual(self._read_summary()['last_allimported'], '0.23.1.1')
+
+    def test_missing_summary(self):
+        """summary.json が存在しない場合は何もしないこと"""
+        self.assertFalse(repair_summary(self.tmpdir))
+        self.assertFalse(os.path.exists(self.summary_path))
+
+    def test_broken_json_untouched(self):
+        """壊れた JSON はエラーにならず、変更もされないこと"""
+        with open(self.summary_path, 'w', encoding='utf-8') as f:
+            f.write('{broken')
+        self.assertFalse(repair_summary(self.tmpdir))
+        with open(self.summary_path, encoding='utf-8') as f:
+            self.assertEqual(f.read(), '{broken')
+
+
+class TestRepairCli(unittest.TestCase):
+    """--repair モードの CLI テスト"""
+
+    SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migrate.py')
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _run(self, *argv):
+        import subprocess
+        import sys as _sys
+        return subprocess.run(
+            [_sys.executable, self.SCRIPT, *argv],
+            capture_output=True, text=True,
+        )
+
+    def test_repair_mode_fixes_records_and_summary(self):
+        """--repair のみで曲別 JSON と summary.json の両方が修復されること"""
+        music = {
+            'SP': {
+                'ANOTHER': {
+                    'notes': 1000,
+                    'timestamps': ['20230101-120000'],
+                    'history': {},
+                    'best': {},
+                    'achievement': {'fromhistoriesgenerate_lastversion': 'migration'},
+                }
+            }
+        }
+        save_music_json(self.tmpdir, 'Broken Song', music)
+        with open(os.path.join(self.tmpdir, 'summary.json'), 'w', encoding='utf-8') as f:
+            json.dump({'last_allimported': 'migration', 'musics': {}}, f)
+
+        result = self._run('--repair', self.tmpdir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Charts repaired : 1', result.stdout)
+
+        data = load_music_json(self.tmpdir, 'Broken Song')
+        self.assertEqual(
+            data['SP']['ANOTHER']['achievement']['fromhistoriesgenerate_lastversion'],
+            '0.0.0',
+        )
+        with open(os.path.join(self.tmpdir, 'summary.json'), encoding='utf-8') as f:
+            self.assertEqual(json.load(f)['last_allimported'], '0.0.0')
+
+    def test_repair_rejects_extra_arguments(self):
+        """--repair と移行モードの引数は併用できないこと"""
+        result = self._run('--repair', self.tmpdir, 'alllog.pkl', 'records')
+        self.assertNotEqual(result.returncode, 0)
+
+        result = self._run('--repair', self.tmpdir, '--no-musicnames')
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_repair_nonexistent_dir_fails(self):
+        """存在しないディレクトリを指定するとエラー終了すること"""
+        result = self._run('--repair', os.path.join(self.tmpdir, 'no_such_dir'))
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_migrate_mode_still_requires_arguments(self):
+        """移行モードの必須引数チェックが維持されていること"""
+        # 引数なし
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        # musicnames 指定なし
+        result = self._run('input.pkl', self.tmpdir)
+        self.assertNotEqual(result.returncode, 0)
 
 
 class TestIntegration(unittest.TestCase):

@@ -26,9 +26,10 @@
 
 ```bash
 python migrate.py <入力ファイル> <出力先 records ディレクトリ> (--musicnames <パス> | --no-musicnames)
+python migrate.py --repair <records ディレクトリ>
 ```
 
-`--musicnames` と `--no-musicnames` のどちらかは必須です。入力ファイルの形式は拡張子で自動判定します（`.infdc` → v3、それ以外 → v2）。
+移行モードでは `--musicnames` と `--no-musicnames` のどちらかは必須です。入力ファイルの形式は拡張子で自動判定します（`.infdc` → v3、それ以外 → v2）。
 
 ### 新規移行（v2 alllog.pkl）
 
@@ -63,6 +64,18 @@ python migrate.py path/to/alllog.pkl path/to/records --no-musicnames
 ```
 
 本リポジトリの `resources/musicnamechanges.res` はテスト用に同梱しているものであり、内容が最新でない場合があります。
+
+### データ修復のみ（--repair）
+
+移行を行わず、旧版の本ツールが書き込んだ不正なバージョン値（`'migration'`）の修復のみを実行します。inf_daken_counter の入力ファイルは不要です。
+
+```bash
+python migrate.py --repair path/to/inf_notebook/records
+```
+
+- 各曲別 JSON の `achievement.fromhistoriesgenerate_lastversion` と `summary.json` の `last_allimported` のうち、数字を含まない値を `'0.0.0'` に置換します
+- `'0.0.0'` は inf_notebook 側で「古い」と判定されるため、次回アクセス時に実績・summary が再生成され実バージョンで上書きされます
+- 正常な値のファイルには一切書き込みを行いません
 
 ### 実行結果の例
 
