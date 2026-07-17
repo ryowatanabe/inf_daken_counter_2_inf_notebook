@@ -3,9 +3,13 @@ inf_daken_counter の alllog.pkl / playlog.infdc を inf_notebook の JSON 形�
 
 Usage:
     python migrate.py <alllog.pkl|playlog.infdc> <output_records_dir> (--musicnames <path> | --no-musicnames)
+    python migrate.py --repair <records_dir>
 
 既存データがある場合はマージ（重複タイムスタンプは無視）します。
 recent.json は alllog に UI 情報がないため生成しません。
+
+--repair は移行を行わず、既存 records の不正なバージョン値
+（旧版ツールが書き込んだ 'migration'）の修復のみ実行します。
 """
 
 import bz2
@@ -15,6 +19,7 @@ import json
 import math
 import os
 import pickle
+import re
 import sys
 from copy import deepcopy
 
@@ -539,12 +544,120 @@ def _update_best_from_history(best: dict, ts: str, spec: dict, opts: dict | None
                 }
 
 
+# ---------- 過去の不正バージョン値の修復 ----------
+
+def repair_invalid_versions(records_dir: str) -> int:
+    """過去の移行で書き込まれた不正な fromhistoriesgenerate_lastversion を修復する。
+
+    旧版の本スクリプトは 'migration' という数字を含まない文字列を書き込んでおり、
+    inf_notebook の versioncheck.py が AttributeError でクラッシュする。
+    数字を含まない値を '0.0.0' に置換して保存し直す
+    （'0.0.0' は inf_notebook 側で「古い」と判定され achievement が再生成される）。
+
+    Returns:
+        修復した譜面数
+    """
+    repaired = 0
+
+    for fname in sorted(os.listdir(records_dir)):
+        if not fname.endswith('.json'):
+            continue
+        if fname in ('recent.json', 'summary.json'):
+            continue
+
+        path = os.path.join(records_dir, fname)
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        file_repaired = 0
+        for diffs in data.values():
+            if not isinstance(diffs, dict):
+                continue
+            for target in diffs.values():
+                if not isinstance(target, dict):
+                    continue
+                achievement = target.get('achievement')
+                if not isinstance(achievement, dict):
+                    continue
+                version = achievement.get('fromhistoriesgenerate_lastversion')
+                if isinstance(version, str) and re.search(r'\d', version) is None:
+                    achievement['fromhistoriesgenerate_lastversion'] = '0.0.0'
+                    file_repaired += 1
+
+        if file_repaired > 0:
+            tmp_path = path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(tmp_path, path)
+            repaired += file_repaired
+
+    return repaired
+
+
+def repair_summary(records_dir: str) -> bool:
+    """summary.json の last_allimported が数字を含まない場合 '0.0.0' に修復する。
+
+    旧版の本スクリプトは 'migration' を書き込んでおり、inf_notebook 起動時の
+    全曲インポート判定（version_isold）でクラッシュする。
+
+    Returns:
+        修復した場合 True
+    """
+    path = os.path.join(records_dir, 'summary.json')
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding='utf-8') as f:
+            summary = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(summary, dict):
+        return False
+
+    version = summary.get('last_allimported')
+    if not isinstance(version, str) or re.search(r'\d', version) is not None:
+        return False
+
+    summary['last_allimported'] = '0.0.0'
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(summary, f)
+    os.replace(tmp_path, path)
+    return True
+
+
+def run_repair(records_dir: str) -> None:
+    """移行を行わず、既存 records の不正なバージョン値の修復のみ実行する。"""
+    print(f"Repair target: {records_dir}")
+
+    if not os.path.isdir(records_dir):
+        print(f"Error: records directory not found: {records_dir}")
+        sys.exit(1)
+
+    charts_repaired = repair_invalid_versions(records_dir)
+    summary_repaired = repair_summary(records_dir)
+
+    print()
+    print("=== Repair Report ===")
+    print(f"  Charts repaired : {charts_repaired}")
+    print(f"  summary.json    : {'repaired' if summary_repaired else 'no change'}")
+    print("Done.")
+
+
 # ---------- summary.json 生成 ----------
 
 def generate_summary(records_dir: str) -> dict:
     """records/ 以下の全 JSON ファイルを走査して summary.json を生成する。"""
     summary = {
-        'last_allimported': 'migration',
+        # inf_notebook の versioncheck.py は数字を含まない成分で AttributeError になるため
+        # バージョン形式の文字列にする。'0.0.0' は常に「古い」と判定され、
+        # アプリ起動時の import_allmusics で実バージョンに上書きされる。
+        'last_allimported': '0.0.0',
         'musics': {},
     }
 
@@ -1040,7 +1153,12 @@ def main(input_path: str, output_dir: str, musicnames_path: str | None = DEFAULT
         total_skipped += skipped
         total_songs += 1
 
-    # 4. summary.json 生成
+    # 4. 過去の移行で書き込まれた不正なバージョン値を修復
+    total_repaired = repair_invalid_versions(output_dir)
+    if total_repaired > 0:
+        print(f"Repaired invalid version strings in existing records: {total_repaired} charts")
+
+    # 5. summary.json 生成
     print("Generating summary.json ...")
     summary = generate_summary(output_dir)
     summary_path = os.path.join(output_dir, 'summary.json')
@@ -1057,6 +1175,8 @@ def main(input_path: str, output_dir: str, musicnames_path: str | None = DEFAULT
     print(f"  Entries excluded: {excluded}")
     if renamed > 0:
         print(f"  Names renamed   : {renamed}")
+    if total_repaired > 0:
+        print(f"  Versions repaired: {total_repaired} charts")
     print(f"  Load errors     : {load_errors}")
     print(f"  summary.json    : {len(summary['musics'])} songs")
     print("Done.")
@@ -1068,10 +1188,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='inf_daken_counter の alllog.pkl / playlog.infdc を inf_notebook の JSON 形式に移行する'
     )
-    parser.add_argument('input_file', help='alllog.pkl または playlog.infdc のパス')
-    parser.add_argument('output_records_dir', help='出力先 records ディレクトリ')
+    parser.add_argument('input_file', nargs='?', help='alllog.pkl または playlog.infdc のパス')
+    parser.add_argument('output_records_dir', nargs='?', help='出力先 records ディレクトリ')
+    parser.add_argument(
+        '--repair',
+        metavar='RECORDS_DIR',
+        default=None,
+        help='移行を行わず、既存 records の不正なバージョン値の修復のみ実行する',
+    )
 
-    musicnames_group = parser.add_mutually_exclusive_group(required=True)
+    musicnames_group = parser.add_mutually_exclusive_group()
     musicnames_group.add_argument(
         '--musicnames',
         metavar='PATH',
@@ -1086,11 +1212,21 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    if args.repair is not None:
+        if args.input_file is not None or args.output_records_dir is not None \
+                or args.musicnames is not None or args.no_musicnames:
+            parser.error('--repair は他の引数と併用できません')
+        run_repair(args.repair)
+        sys.exit(0)
+
+    if args.input_file is None or args.output_records_dir is None:
+        parser.error('input_file と output_records_dir を指定してください（修復のみの場合は --repair）')
+    if args.musicnames is None and not args.no_musicnames:
+        parser.error('--musicnames または --no-musicnames のいずれかを指定してください')
+
     if args.no_musicnames:
         musicnames_path = None
-    elif args.musicnames:
-        musicnames_path = args.musicnames
     else:
-        musicnames_path = DEFAULT_MUSICNAMES_PATH
+        musicnames_path = args.musicnames
 
     main(args.input_file, args.output_records_dir, musicnames_path)

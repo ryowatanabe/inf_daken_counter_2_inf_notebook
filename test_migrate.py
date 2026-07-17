@@ -10,6 +10,7 @@ import pickle
 import shutil
 import tempfile
 import unittest
+from copy import deepcopy
 
 from migrate import (
     CLEAR_TYPES,
@@ -39,6 +40,8 @@ from migrate import (
     normalize_v3_entry,
     parse_options,
     parse_play_mode,
+    repair_invalid_versions,
+    repair_summary,
     save_music_json,
     load_music_json,
     should_exclude,
@@ -775,6 +778,233 @@ class TestGenerateSummary(unittest.TestCase):
         self.assertIn('DP BATTLE', entry)
         self.assertEqual(entry['DP'], {})
         self.assertEqual(entry['DP BATTLE'], {})
+
+    def test_last_allimported_is_numeric_version(self):
+        """last_allimported が数字を含むバージョン形式であること。
+        inf_notebook の main.pyw が起動時に version_isold で比較するため、
+        数字を含まない文字列（例: 'migration'）は AttributeError を引き起こす。
+        """
+        summary = generate_summary(self.tmpdir)
+        import re
+        self.assertIsNotNone(
+            re.search(r'\d', summary['last_allimported']),
+            f"last_allimported={summary['last_allimported']!r} must contain digits"
+        )
+        # '0.0.0' は inf_notebook の全曲再インポートを必ず発火させる値
+        self.assertEqual(summary['last_allimported'], '0.0.0')
+
+
+class TestRepairInvalidVersions(unittest.TestCase):
+    """旧版ツールが書き込んだ 'migration' の修復処理のテスト"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _make_music(self, version):
+        return {
+            'SP': {
+                'ANOTHER': {
+                    'notes': 1000,
+                    'timestamps': ['20230101-120000'],
+                    'history': {'20230101-120000': {
+                        'clear_type': {'value': 'CLEAR', 'new': False},
+                        'dj_level': {'value': 'A', 'new': False},
+                        'score': {'value': 1500, 'new': False},
+                        'miss_count': {'value': 10, 'new': False},
+                        'options': None, 'playspeed': None,
+                    }},
+                    'best': {},
+                    'achievement': {
+                        'fixed': {'clear_type': 'CLEAR', 'dj_level': 'A'},
+                        'S-RANDOM': {'clear_type': None, 'dj_level': None},
+                        'ALL-SCR': {'clear_type': None, 'dj_level': None},
+                        'fromhistoriesgenerate_lastversion': version,
+                    },
+                }
+            }
+        }
+
+    def test_migration_replaced_with_version(self):
+        """'migration' が '0.0.0' に置換され、他のフィールドは変更されないこと"""
+        save_music_json(self.tmpdir, 'Broken Song', self._make_music('migration'))
+        repaired = repair_invalid_versions(self.tmpdir)
+        self.assertEqual(repaired, 1)
+
+        data = load_music_json(self.tmpdir, 'Broken Song')
+        ach = data['SP']['ANOTHER']['achievement']
+        self.assertEqual(ach['fromhistoriesgenerate_lastversion'], '0.0.0')
+        # 他フィールドが無変更であること
+        expected = self._make_music('0.0.0')
+        self.assertEqual(data, expected)
+
+    def test_valid_versions_untouched(self):
+        """数字を含む正常なバージョン値は書き換えられないこと"""
+        for name, version in [('Song A', '0.0.0'), ('Song B', '0.22.1.0'), ('Song C', '0.21.dev11')]:
+            save_music_json(self.tmpdir, name, self._make_music(version))
+
+        repaired = repair_invalid_versions(self.tmpdir)
+        self.assertEqual(repaired, 0)
+
+        self.assertEqual(
+            load_music_json(self.tmpdir, 'Song B')['SP']['ANOTHER']['achievement']['fromhistoriesgenerate_lastversion'],
+            '0.22.1.0',
+        )
+
+    def test_multiple_charts_counted(self):
+        """複数譜面に不正値がある場合、譜面単位で修復数がカウントされること"""
+        music = self._make_music('migration')
+        music['DP'] = {'HYPER': deepcopy(music['SP']['ANOTHER'])}
+        save_music_json(self.tmpdir, 'Multi Chart Song', music)
+        save_music_json(self.tmpdir, 'Another Broken', self._make_music('migration'))
+
+        repaired = repair_invalid_versions(self.tmpdir)
+        self.assertEqual(repaired, 3)
+
+        data = load_music_json(self.tmpdir, 'Multi Chart Song')
+        self.assertEqual(data['SP']['ANOTHER']['achievement']['fromhistoriesgenerate_lastversion'], '0.0.0')
+        self.assertEqual(data['DP']['HYPER']['achievement']['fromhistoriesgenerate_lastversion'], '0.0.0')
+
+    def test_recent_and_summary_skipped(self):
+        """recent.json / summary.json は修復対象外であること"""
+        for fname in ('recent.json', 'summary.json'):
+            with open(os.path.join(self.tmpdir, fname), 'w', encoding='utf-8') as f:
+                json.dump({'last_allimported': 'migration'}, f)
+
+        repaired = repair_invalid_versions(self.tmpdir)
+        self.assertEqual(repaired, 0)
+
+        with open(os.path.join(self.tmpdir, 'summary.json'), encoding='utf-8') as f:
+            self.assertEqual(json.load(f)['last_allimported'], 'migration')
+
+    def test_chart_without_achievement_ignored(self):
+        """achievement を持たない譜面があってもエラーにならないこと"""
+        music = self._make_music('migration')
+        del music['SP']['ANOTHER']['achievement']
+        save_music_json(self.tmpdir, 'No Achievement Song', music)
+
+        repaired = repair_invalid_versions(self.tmpdir)
+        self.assertEqual(repaired, 0)
+
+
+class TestRepairSummary(unittest.TestCase):
+    """summary.json の last_allimported 修復処理のテスト"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.summary_path = os.path.join(self.tmpdir, 'summary.json')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _write_summary(self, data):
+        with open(self.summary_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+
+    def _read_summary(self):
+        with open(self.summary_path, encoding='utf-8') as f:
+            return json.load(f)
+
+    def test_migration_replaced(self):
+        """'migration' が '0.0.0' に置換され、musics は変更されないこと"""
+        self._write_summary({'last_allimported': 'migration', 'musics': {'Song A': {'SP': {}}}})
+        self.assertTrue(repair_summary(self.tmpdir))
+        self.assertEqual(
+            self._read_summary(),
+            {'last_allimported': '0.0.0', 'musics': {'Song A': {'SP': {}}}},
+        )
+
+    def test_valid_version_untouched(self):
+        """数字を含む正常なバージョン値は書き換えられないこと"""
+        self._write_summary({'last_allimported': '0.23.1.1', 'musics': {}})
+        self.assertFalse(repair_summary(self.tmpdir))
+        self.assertEqual(self._read_summary()['last_allimported'], '0.23.1.1')
+
+    def test_missing_summary(self):
+        """summary.json が存在しない場合は何もしないこと"""
+        self.assertFalse(repair_summary(self.tmpdir))
+        self.assertFalse(os.path.exists(self.summary_path))
+
+    def test_broken_json_untouched(self):
+        """壊れた JSON はエラーにならず、変更もされないこと"""
+        with open(self.summary_path, 'w', encoding='utf-8') as f:
+            f.write('{broken')
+        self.assertFalse(repair_summary(self.tmpdir))
+        with open(self.summary_path, encoding='utf-8') as f:
+            self.assertEqual(f.read(), '{broken')
+
+
+class TestRepairCli(unittest.TestCase):
+    """--repair モードの CLI テスト"""
+
+    SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migrate.py')
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _run(self, *argv):
+        import subprocess
+        import sys as _sys
+        return subprocess.run(
+            [_sys.executable, self.SCRIPT, *argv],
+            capture_output=True, text=True,
+        )
+
+    def test_repair_mode_fixes_records_and_summary(self):
+        """--repair のみで曲別 JSON と summary.json の両方が修復されること"""
+        music = {
+            'SP': {
+                'ANOTHER': {
+                    'notes': 1000,
+                    'timestamps': ['20230101-120000'],
+                    'history': {},
+                    'best': {},
+                    'achievement': {'fromhistoriesgenerate_lastversion': 'migration'},
+                }
+            }
+        }
+        save_music_json(self.tmpdir, 'Broken Song', music)
+        with open(os.path.join(self.tmpdir, 'summary.json'), 'w', encoding='utf-8') as f:
+            json.dump({'last_allimported': 'migration', 'musics': {}}, f)
+
+        result = self._run('--repair', self.tmpdir)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Charts repaired : 1', result.stdout)
+
+        data = load_music_json(self.tmpdir, 'Broken Song')
+        self.assertEqual(
+            data['SP']['ANOTHER']['achievement']['fromhistoriesgenerate_lastversion'],
+            '0.0.0',
+        )
+        with open(os.path.join(self.tmpdir, 'summary.json'), encoding='utf-8') as f:
+            self.assertEqual(json.load(f)['last_allimported'], '0.0.0')
+
+    def test_repair_rejects_extra_arguments(self):
+        """--repair と移行モードの引数は併用できないこと"""
+        result = self._run('--repair', self.tmpdir, 'alllog.pkl', 'records')
+        self.assertNotEqual(result.returncode, 0)
+
+        result = self._run('--repair', self.tmpdir, '--no-musicnames')
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_repair_nonexistent_dir_fails(self):
+        """存在しないディレクトリを指定するとエラー終了すること"""
+        result = self._run('--repair', os.path.join(self.tmpdir, 'no_such_dir'))
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_migrate_mode_still_requires_arguments(self):
+        """移行モードの必須引数チェックが維持されていること"""
+        # 引数なし
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        # musicnames 指定なし
+        result = self._run('input.pkl', self.tmpdir)
+        self.assertNotEqual(result.returncode, 0)
 
 
 class TestIntegration(unittest.TestCase):
