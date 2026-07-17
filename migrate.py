@@ -15,6 +15,7 @@ import json
 import math
 import os
 import pickle
+import re
 import sys
 from copy import deepcopy
 
@@ -539,12 +540,70 @@ def _update_best_from_history(best: dict, ts: str, spec: dict, opts: dict | None
                 }
 
 
+# ---------- 過去の不正バージョン値の修復 ----------
+
+def repair_invalid_versions(records_dir: str) -> int:
+    """過去の移行で書き込まれた不正な fromhistoriesgenerate_lastversion を修復する。
+
+    旧版の本スクリプトは 'migration' という数字を含まない文字列を書き込んでおり、
+    inf_notebook の versioncheck.py が AttributeError でクラッシュする。
+    数字を含まない値を '0.0.0' に置換して保存し直す
+    （'0.0.0' は inf_notebook 側で「古い」と判定され achievement が再生成される）。
+
+    Returns:
+        修復した譜面数
+    """
+    repaired = 0
+
+    for fname in sorted(os.listdir(records_dir)):
+        if not fname.endswith('.json'):
+            continue
+        if fname in ('recent.json', 'summary.json'):
+            continue
+
+        path = os.path.join(records_dir, fname)
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        file_repaired = 0
+        for diffs in data.values():
+            if not isinstance(diffs, dict):
+                continue
+            for target in diffs.values():
+                if not isinstance(target, dict):
+                    continue
+                achievement = target.get('achievement')
+                if not isinstance(achievement, dict):
+                    continue
+                version = achievement.get('fromhistoriesgenerate_lastversion')
+                if isinstance(version, str) and re.search(r'\d', version) is None:
+                    achievement['fromhistoriesgenerate_lastversion'] = '0.0.0'
+                    file_repaired += 1
+
+        if file_repaired > 0:
+            tmp_path = path + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            os.replace(tmp_path, path)
+            repaired += file_repaired
+
+    return repaired
+
+
 # ---------- summary.json 生成 ----------
 
 def generate_summary(records_dir: str) -> dict:
     """records/ 以下の全 JSON ファイルを走査して summary.json を生成する。"""
     summary = {
-        'last_allimported': 'migration',
+        # inf_notebook の versioncheck.py は数字を含まない成分で AttributeError になるため
+        # バージョン形式の文字列にする。'0.0.0' は常に「古い」と判定され、
+        # アプリ起動時の import_allmusics で実バージョンに上書きされる。
+        'last_allimported': '0.0.0',
         'musics': {},
     }
 
@@ -1040,7 +1099,12 @@ def main(input_path: str, output_dir: str, musicnames_path: str | None = DEFAULT
         total_skipped += skipped
         total_songs += 1
 
-    # 4. summary.json 生成
+    # 4. 過去の移行で書き込まれた不正なバージョン値を修復
+    total_repaired = repair_invalid_versions(output_dir)
+    if total_repaired > 0:
+        print(f"Repaired invalid version strings in existing records: {total_repaired} charts")
+
+    # 5. summary.json 生成
     print("Generating summary.json ...")
     summary = generate_summary(output_dir)
     summary_path = os.path.join(output_dir, 'summary.json')
@@ -1057,6 +1121,8 @@ def main(input_path: str, output_dir: str, musicnames_path: str | None = DEFAULT
     print(f"  Entries excluded: {excluded}")
     if renamed > 0:
         print(f"  Names renamed   : {renamed}")
+    if total_repaired > 0:
+        print(f"  Versions repaired: {total_repaired} charts")
     print(f"  Load errors     : {load_errors}")
     print(f"  summary.json    : {len(summary['musics'])} songs")
     print("Done.")
